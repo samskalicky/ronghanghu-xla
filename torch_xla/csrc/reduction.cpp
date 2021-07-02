@@ -374,6 +374,10 @@ xla::XlaOp BuildMinInDim(xla::XlaOp input, xla::int64 dim,
   return result;
 }
 
+xla::XlaOp BuildAMax(xla::XlaOp input, absl::Span<const xla::int64> dimensions, bool keep_reduced_dimensions) {
+    /* TODO */
+}
+
 xla::XlaOp BuildArgMax(xla::XlaOp input, xla::int64 dim, bool keepdim) {
   const xla::Shape* shape = &XlaHelpers::ShapeOfXlaOp(input);
   xla::XlaOp operand = input;
