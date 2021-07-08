@@ -21,23 +21,23 @@ xla::Shape NodeOutputShape(const Value& input,
 
 }  // namespace
 
-AMax::AMax(const Value& input, std::vector<xla::int64> dimensions, bool keepdim)
+Amax::Amax(const Value& input, std::vector<xla::int64> dimensions, bool keepdim)
     : Node(ir::OpKind(at::aten::argmax), {input},
            [&]() { return NodeOutputShape(input, dimensions, keepdim); },
            /*num_outputs=*/1, xla::util::MHash(dimensions, keepdim)),
       dimensions_(std::move(dimensions)),
       keepdim_(keepdim) {}
 
-NodePtr AMax::Clone(OpList operands) const {
-  return MakeNode<AMax>(operands.at(0), dimensions_, keepdim_);
+NodePtr Amax::Clone(OpList operands) const {
+  return MakeNode<Amax>(operands.at(0), dimensions_, keepdim_);
 }
 
-XlaOpVector AMax::Lower(LoweringContext* loctx) const {
+XlaOpVector Amax::Lower(LoweringContext* loctx) const {
   xla::XlaOp input = loctx->GetOutputOp(operand(0));
   return ReturnOp(BuildMaxInDims(input, dimensions_, keepdim_), loctx);
 }
 
-std::string AMax::ToString() const {
+std::string Amax::ToString() const {
   std::stringstream ss;
   ss << Node::ToString() << ", dimensions=" << absl::StrJoin(dimensions_, ", ")
      << ", keepdim=" << keepdim_;
