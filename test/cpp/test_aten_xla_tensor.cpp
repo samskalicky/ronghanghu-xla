@@ -1171,6 +1171,8 @@ TEST_F(AtenXlaTensorTest, TestAmax) {
       }
     }
   }
+  ExpectCounterNotChanged("aten::.*", cpp_test::GetIgnoredCounters());
+  ExpectCounterChanged("xla::amax", cpp_test::GetIgnoredCounters());
 }
 
 TEST_F(AtenXlaTensorTest, TestAny) {
