@@ -580,13 +580,13 @@ XLATensor XLATensor::all(const XLATensor& input,
 }
 
 XLATensor XLATensor::amax(const XLATensor& input,
-               std::vector<xla::int64> dimensions,
-               bool keep_reduced_dimensions) {
+                          std::vector<xla::int64> dimensions,
+                          bool keep_reduced_dimensions) {
   return input.CreateFrom(
       ir::MakeNode<ir::ops::AMax>(input.GetIrValue(),
-                                 XlaHelpers::GetCanonicalDimensionIndices(
-                                     dimensions, input.shape().get().rank()),
-                                 keep_reduced_dimensions));
+                                  XlaHelpers::GetCanonicalDimensionIndices(
+                                      dimensions, input.shape().get().rank()),
+                                  keep_reduced_dimensions));
 }
 
 XLATensor XLATensor::any(const XLATensor& input,

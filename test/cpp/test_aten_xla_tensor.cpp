@@ -1151,7 +1151,8 @@ TEST_F(AtenXlaTensorTest, TestAMax) {
       auto values_indices = torch::amax(input, {dim}, /*keepdim=*/keepdim);
       ForEachDevice([&](const torch::Device& device) {
         torch::Tensor xla_input = CopyToDevice(input, device);
-        auto xla_values_indices = torch::amax(xla_input, {dim}, /*keepdim=*/keepdim);
+        auto xla_values_indices =
+            torch::amax(xla_input, {dim}, /*keepdim=*/keepdim);
         AllClose(values_indices, xla_values_indices);
       });
     }
@@ -1159,10 +1160,12 @@ TEST_F(AtenXlaTensorTest, TestAMax) {
       for (int dim2 = -rank; dim2 < rank; ++dim2) {
         if ((dim1 == dim2) || (dim1 == rank + dim2) || (dim2 == rank + dim1))
           continue;
-        auto values_indices = torch::amax(input, {dim1, dim2}, /*keepdim=*/keepdim);
+        auto values_indices =
+            torch::amax(input, {dim1, dim2}, /*keepdim=*/keepdim);
         ForEachDevice([&](const torch::Device& device) {
           torch::Tensor xla_input = CopyToDevice(input, device);
-          auto xla_values_indices = torch::amax(xla_input, {dim1, dim2}, /*keepdim=*/keepdim);
+          auto xla_values_indices =
+              torch::amax(xla_input, {dim1, dim2}, /*keepdim=*/keepdim);
           AllClose(values_indices, xla_values_indices);
         });
       }
