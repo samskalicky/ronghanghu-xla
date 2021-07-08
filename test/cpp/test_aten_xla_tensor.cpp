@@ -1142,6 +1142,24 @@ TEST_F(AtenXlaTensorTest, TestAllDimKeep) {
   }
 }
 
+TEST_F(AtenXlaTensorTest, TestAMax) {
+  torch::Tensor input =
+      torch::rand({4, 3, 4}, torch::TensorOptions(torch::kFloat));
+  int rank = input.dim();
+  for (int dim = -rank; dim < rank; ++dim) {
+    for (bool keepdim : {false, true}) {
+      auto values_indices = torch::amax(input, {dim}, /*keepdim=*/keepdim);
+      ForEachDevice([&](const torch::Device& device) {
+        torch::Tensor xla_input = CopyToDevice(input, device);
+        auto xla_values_indices =
+            torch::amax(xla_input, {dim}, /*keepdim=*/keepdim);
+        //AllClose(std::get<0>(values_indices), std::get<0>(xla_values_indices));
+        //AllEqual(std::get<1>(values_indices), std::get<1>(xla_values_indices));
+      });
+    }
+  }
+}
+
 TEST_F(AtenXlaTensorTest, TestAny) {
   for (torch::ScalarType scalar_type :
        {torch::kFloat, torch::kByte, torch::kChar, torch::kShort, torch::kInt,

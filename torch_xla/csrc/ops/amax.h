@@ -8,7 +8,7 @@ namespace ops {
 
 class AMax : public Node {
  public:
-  AMax(const Value& input, xla::int64 dim, bool keepdim);
+  AMax(const Value& input, std::vector<xla::int64> dimensions, bool keepdim);
 
   std::string ToString() const override;
 
@@ -16,12 +16,12 @@ class AMax : public Node {
 
   XlaOpVector Lower(LoweringContext* loctx) const override;
 
-  xla::int64 dim() const { return dim_; };
+  std::vector<xla::int64> dim() const { return dimensions_; };
 
   bool keepdim() const { return keepdim_; }
 
  private:
-  xla::int64 dimensions;
+  std::vector<xla::int64> dimensions_;
   bool keepdim_;
 };
 

@@ -15,7 +15,8 @@ xla::Shape NodeOutputShape(const Value& input,
                            bool keepdim) {
   auto lower_for_shape_fn =
       [&](absl::Span<const xla::XlaOp> operands) -> xla::XlaOp {
-    return BuildAMax(operands[0], dimensions, keepdim);
+    return BuildMaxInDims(operands[0], dimensions, keepdim);
+    //return BuildAMax(operands[0], dimensions, keepdim);
   };
   return InferOutputShape({input.shape()}, lower_for_shape_fn);
 }
@@ -36,12 +37,13 @@ NodePtr AMax::Clone(OpList operands) const {
 
 XlaOpVector AMax::Lower(LoweringContext* loctx) const {
   xla::XlaOp input = loctx->GetOutputOp(operand(0));
-  return ReturnOp(BuildAMax(input, dimensions_, keepdim_), loctx);
+  return ReturnOp(BuildMaxInDims(input, dimensions_, keepdim_), loctx);
+  //return ReturnOp(BuildAMax(input, dimensions_, keepdim_), loctx);
 }
 
 std::string AMax::ToString() const {
   std::stringstream ss;
-  ss << Node::ToString() << ", dimensions=" << dimensions_ << ", keepdim=" << keepdim_;
+  ss << Node::ToString() << ", dimensions=" << absl::StrJoin(dimensions_, ", ") << ", keepdim=" << keepdim_;
   return ss.str();
 }
 
