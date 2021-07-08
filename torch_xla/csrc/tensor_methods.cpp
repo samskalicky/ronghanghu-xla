@@ -582,7 +582,6 @@ XLATensor XLATensor::all(const XLATensor& input,
 XLATensor XLATensor::amax(const XLATensor& input,
                std::vector<xla::int64> dimensions,
                bool keep_reduced_dimensions) {
-  std::cout << "amax in tensor_methods" << std::endl;
   return input.CreateFrom(
       ir::MakeNode<ir::ops::AMax>(input.GetIrValue(),
                                  XlaHelpers::GetCanonicalDimensionIndices(

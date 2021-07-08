@@ -67,11 +67,6 @@ xla::XlaOp BuildMaxInDims(xla::XlaOp input,
 xla::XlaOp BuildMinInDim(xla::XlaOp input, xla::int64 dim,
                          bool keep_reduced_dimensions);
 
-// Compute the max value of each slice of the input tensor in the given dimension(s) dim.
-xla::XlaOp BuildAMax(xla::XlaOp input,
-                     absl::Span<const xla::int64> dimensions,
-                     bool keep_reduced_dimensions);
-
 // Compute the indices of the maximum values of a tensor across a dimension.
 xla::XlaOp BuildArgMax(xla::XlaOp input, xla::int64 dim, bool keepdim);
 

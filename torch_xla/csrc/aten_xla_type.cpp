@@ -558,7 +558,6 @@ at::Tensor all(const at::Tensor& self, int64_t dim, bool keepdim) {
 
 at::Tensor amax(const at::Tensor & self, at::IntArrayRef dim, bool keepdim) {
   XLA_FN_COUNTER("xla::");
-  std::cout << "amax in tensor_methods" << std::endl;
   auto xdim = XlaHelpers::I64List(dim);
   return bridge::AtenFromXlaTensor(
       XLATensor::amax(bridge::GetXlaTensor(self), std::move(xdim), keepdim));

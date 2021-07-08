@@ -374,36 +374,6 @@ xla::XlaOp BuildMinInDim(xla::XlaOp input, xla::int64 dim,
   return result;
 }
 
-xla::XlaOp BuildAMax(xla::XlaOp input, absl::Span<const xla::int64> dimensions, bool keep_reduced_dimensions) {
-  /*
-  const xla::Shape& shape = XlaHelpers::ShapeOfXlaOp(input);
-  XlaHelpers::MinMax min_max = XlaHelpers::MinMaxValues(shape.element_type());
-  //std::cout << "min_max " << min_max << std::endl;
-  xla::XlaOp init_value = XlaHelpers::ScalarValue(
-      min_max.min, shape.element_type(), input.builder());
-  std::cout << "init_value " << init_value << std::endl;
-  ReductionInfo rinfo =
-      GetReductionInfo(input, shape, dimensions, keep_reduced_dimensions);
-  //std::cout << "rinfo " << rinfo << std::endl;
-  if (rinfo.element_count.scalar_size) {
-    // When can only assert this if dimensions are not dynamic.
-    XLA_CHECK_GT(*rinfo.element_count.scalar_size, 0);
-  }
-  xla::XlaOp result = xla::Reduce(
-      input, init_value, XlaHelpers::CreateMaxComputation(shape.element_type()),
-      dimensions);
-  if (keep_reduced_dimensions) {
-    result = XlaHelpers::DynamicReshape(result, rinfo.new_dimensions);
-  }
-  return result;
-  */
-  /*
-  */
-  std::cout << "milad" << std::endl;
-  xla::XlaOp* a = new xla::XlaOp();
-  return *a;
-}
-
 xla::XlaOp BuildArgMax(xla::XlaOp input, xla::int64 dim, bool keepdim) {
   const xla::Shape* shape = &XlaHelpers::ShapeOfXlaOp(input);
   xla::XlaOp operand = input;
