@@ -1266,6 +1266,7 @@ class XLATensor {
                                    ir::Value ir_value) const;
 
   void SetSubView(ViewInfo view_info) const;
+  void ModifyCurrentView(ViewInfo view_info) const;
   std::shared_ptr<View> CreateView(ViewInfo view_info) const;
   XLATensor CreateViewTensor(ViewInfo view_info) const;
 
