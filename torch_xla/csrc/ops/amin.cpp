@@ -21,23 +21,23 @@ xla::Shape NodeOutputShape(const Value& input,
 
 }  // namespace
 
-Amin::Amin(const Value& input, std::vector<xla::int64> dimensions, bool keepdim)
+amin::amin(const Value& input, std::vector<xla::int64> dimensions, bool keepdim)
     : Node(ir::OpKind(at::aten::argmax), {input},
            [&]() { return NodeOutputShape(input, dimensions, keepdim); },
            /*num_outputs=*/1, xla::util::MHash(dimensions, keepdim)),
       dimensions_(std::move(dimensions)),
       keepdim_(keepdim) {}
 
-NodePtr Amin::Clone(OpList operands) const {
-  return MakeNode<Amin>(operands.at(0), dimensions_, keepdim_);
+NodePtr amin::Clone(OpList operands) const {
+  return MakeNode<amin>(operands.at(0), dimensions_, keepdim_);
 }
 
-XlaOpVector Amin::Lower(LoweringContext* loctx) const {
+XlaOpVector amin::Lower(LoweringContext* loctx) const {
   xla::XlaOp input = loctx->GetOutputOp(operand(0));
   return ReturnOp(BuildMinInDims(input, dimensions_, keepdim_), loctx);
 }
 
-std::string Amin::ToString() const {
+std::string amin::ToString() const {
   std::stringstream ss;
   ss << Node::ToString() << ", dimensions=" << absl::StrJoin(dimensions_, ", ")
      << ", keepdim=" << keepdim_;

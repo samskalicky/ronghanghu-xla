@@ -6,9 +6,9 @@ namespace torch_xla {
 namespace ir {
 namespace ops {
 
-class Amin : public Node {
+class amin : public Node {
  public:
-  Amin(const Value& input, std::vector<xla::int64> dimensions, bool keepdim);
+  amin(const Value& input, std::vector<xla::int64> dimensions, bool keepdim);
 
   std::string ToString() const override;
 
