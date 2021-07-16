@@ -112,10 +112,10 @@ def _train_update(device, step, loss, tracker, epoch, writer):
 
 
 def train_imagenet():
-  print('==> Preparing data..')
+  print('==> Preparing data..', flush=True)
   img_dim = get_model_property('img_dim')
   if FLAGS.fake_data:
-    train_dataset_len = 1200000  # Roughly the size of Imagenet dataset.
+    train_dataset_len = 1281167  # Exactly the size of Imagenet dataset.
     train_loader = xu.SampleGenerator(
         data=(torch.zeros(FLAGS.batch_size, 3, img_dim, img_dim),
               torch.zeros(FLAGS.batch_size, dtype=torch.int64)),
@@ -124,7 +124,7 @@ def train_imagenet():
     test_loader = xu.SampleGenerator(
         data=(torch.zeros(FLAGS.test_set_batch_size, 3, img_dim, img_dim),
               torch.zeros(FLAGS.test_set_batch_size, dtype=torch.int64)),
-        sample_count=50000 // FLAGS.batch_size // xm.xrt_world_size())
+        sample_count=50000 // FLAGS.test_set_batch_size // xm.xrt_world_size())
   else:
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -156,11 +156,13 @@ def train_imagenet():
           train_dataset,
           num_replicas=xm.xrt_world_size(),
           rank=xm.get_ordinal(),
+          drop_last=FLAGS.drop_last,
           shuffle=True)
       test_sampler = torch.utils.data.distributed.DistributedSampler(
           test_dataset,
           num_replicas=xm.xrt_world_size(),
           rank=xm.get_ordinal(),
+          drop_last=FLAGS.drop_last,
           shuffle=False)
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -177,13 +179,16 @@ def train_imagenet():
         shuffle=False,
         num_workers=FLAGS.num_workers)
 
+  xm.rendezvous("data loaded")
+  print("data loaded", flush=True)
+
   torch.manual_seed(42)
 
   device = xm.xla_device()
   model = get_model_property('model_fn')().to(device)
   writer = None
-  if xm.is_master_ordinal():
-    writer = test_utils.get_summary_writer(FLAGS.logdir)
+  # if xm.is_master_ordinal():
+  #   writer = test_utils.get_summary_writer(FLAGS.logdir)
   optimizer = optim.SGD(
       model.parameters(),
       lr=FLAGS.lr,
@@ -235,6 +240,10 @@ def train_imagenet():
   train_device_loader = pl.MpDeviceLoader(train_loader, device)
   test_device_loader = pl.MpDeviceLoader(test_loader, device)
   accuracy, max_accuracy = 0.0, 0.0
+
+  xm.rendezvous("training begins")
+  print("training begins", flush=True)
+
   for epoch in range(1, FLAGS.num_epochs + 1):
     xm.master_print('Epoch {} train begin {}'.format(epoch, test_utils.now()))
     train_loop_fn(train_device_loader, epoch)
@@ -252,7 +261,7 @@ def train_imagenet():
     if FLAGS.metrics_debug:
       xm.master_print(met.metrics_report())
 
-  test_utils.close_summary_writer(writer)
+  # test_utils.close_summary_writer(writer)
   xm.master_print('Max Accuracy: {:.2f}%'.format(max_accuracy))
   return max_accuracy
 
@@ -269,4 +278,4 @@ def _mp_fn(index, flags):
 
 
 if __name__ == '__main__':
-  xmp.spawn(_mp_fn, args=(FLAGS,), nprocs=FLAGS.num_cores)
+  xmp.spawn(_mp_fn, args=(FLAGS,), nprocs=FLAGS.num_cores, start_method="fork")
