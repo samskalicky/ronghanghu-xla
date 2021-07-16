@@ -306,4 +306,5 @@ def _mp_fn(index, flags):
 
 
 if __name__ == "__main__":
+    print("program starts", flush=True)
     xmp.spawn(_mp_fn, args=(FLAGS,), nprocs=FLAGS.num_cores, start_method="fork")
