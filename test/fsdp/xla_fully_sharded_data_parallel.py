@@ -1410,7 +1410,12 @@ class FullyShardedDataParallel(nn.Module):
                 p.data = p._full_param_padded
                 output_tensors.append((p.data, True))
             # Trim any padding and reshape to match original size.
-            p.data = p.data[: p._orig_size.numel()].view(p._orig_size)
+            # TODO remove debug code below and use "p.data = p.data[: p._orig_size.numel()].view(p._orig_size)"
+            new_size = p._orig_size
+            tmp = p.data.flatten()[: new_size.numel()]  # p.data comes from xm.all_gather
+            assert tmp.numel() == new_size.numel(), \
+                f"{tmp.numel()} vs {new_size.numel()}"  # this is OK
+            p.data = tmp.view(new_size)  # this crashes
 
         if self._has_shared_params:
             # self.has_full_params flag can be out of sync if a shared param is
