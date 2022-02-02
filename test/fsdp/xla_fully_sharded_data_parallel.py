@@ -1401,16 +1401,17 @@ class FullyShardedDataParallel(nn.Module):
             """
             if custom_output_tensor is not None:
                 assert p._is_sharded
-                p.data = custom_output_tensor
-                output_tensors.append((p.data, True))
+                p_data_padded = custom_output_tensor
+                output_tensors.append((p_data_padded, True))
             elif not p._is_sharded:
                 # Here p.data == p._fp32_shard, so it's not safe to free.
-                output_tensors.append((p.data, False))
+                p_data_padded = p.data
+                output_tensors.append((p_data_padded, False))
             else:
-                p.data = p._full_param_padded
-                output_tensors.append((p.data, True))
+                p_data_padded = p._full_param_padded
+                output_tensors.append((p_data_padded, True))
             # Trim any padding and reshape to match original size.
-            p.data = p.data[: p._orig_size.numel()].view(p._orig_size)
+            p.data = p_data_padded[: p._orig_size.numel()].view(p._orig_size)
 
         if self._has_shared_params:
             # self.has_full_params flag can be out of sync if a shared param is
