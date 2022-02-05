@@ -161,6 +161,10 @@ class Cluster(object):
     def wait_for_healthy_service_worker(tpu_name):
       ctc = cloud_tpu_client.Client(tpu=tpu_name)
       ctc.wait_for_healthy()
+      retry_delay = xu.getenv_as('XLA_CLUSTER_RETRY_DELAY', int, 0)
+      logging.warning(f'Waiting for {retry_delay} seconds before retrying')
+      if retry_delay > 0:
+        time.sleep(retry_delay)
 
     tpus = self.list_tpus_with_health('UNHEALTHY_MAINTENANCE')
     if tpus:
@@ -201,6 +205,10 @@ class Cluster(object):
                   client_worker))
 
       logging.warning('client_worker "{}" is healthy.'.format(client_worker))
+      # retry_delay = xu.getenv_as('XLA_CLUSTER_RETRY_DELAY', int, 0)
+      # logging.warning(f'Waiting for {retry_delay} seconds before retrying')
+      # if retry_delay > 0:
+      #   time.sleep(retry_delay)
 
     xu.parallel_work(
         len(self._client_workers), wait_for_healthy_client_worker,
