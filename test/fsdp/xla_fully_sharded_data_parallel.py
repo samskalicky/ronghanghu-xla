@@ -3,7 +3,6 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 
-from collections import OrderedDict
 import contextlib
 import copy
 from enum import Enum, auto
@@ -14,6 +13,7 @@ import time
 import traceback
 import typing
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -39,6 +39,9 @@ from torch.nn.utils.rnn import PackedSequence
 import torch_xla.core.xla_model as xm
 
 from .xla_flatten_params_wrapper import FlattenParamsWrapper, replace_by_prefix_
+
+if TYPE_CHECKING:
+    from collections import OrderedDict  # noqa: F401
 
 
 class TrainingState(Enum):
