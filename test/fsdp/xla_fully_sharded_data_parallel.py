@@ -349,7 +349,7 @@ class FullyShardedDataParallel(nn.Module):
         # self._return_full_state_dict = True  # not supported in XLA FSDP
         init_end = time.time()
 
-        logging.debug(
+        logging.info(
             f"FSDP.__init__(done): total_init_time: {(init_end - init_start): .4f}"
         )
 
@@ -543,30 +543,63 @@ class FullyShardedDataParallel(nn.Module):
         """
         # Here we implement it in a different manner from the fairscale FSDP
         # We delete the original module parameters and create the sharded ones
+        params_to_shard_set = set(params_to_shard)
+        assert len(params_to_shard_set) == len(params_to_shard), \
+            "params_to_shard should not have dups"
+        full_param_infos = []
+        shared_full_param_memo = {}
+        shared_full_param_infos = []
+        full_params = []
+        for module_name, m in self.named_modules():
+            for n, p_original in m.named_parameters(recurse=False):
+                p = p_original.detach()
+                assert p.dtype == torch.float32, "only fp32 parameters are supported"
+                if p_original in params_to_shard_set:
+                    if p in shared_full_param_memo:
+                        mname, shared_m, shared_n = shared_full_param_memo[p]
+                        shared_full_param_infos.append((module_name, mname, m, n, shared_m, shared_n))
+                    else:
+                        shared_full_param_memo[p] = (module_name, m, n)
+                        full_param_infos.append((module_name, m, n))
+                        full_params.append(p)
+        assert len(full_params) == len(params_to_shard_set), \
+            f"there are parameters in params_to_shard not belonging to this module: " \
+            f"{len(full_params)} vs {len(params_to_shard_set)}"
+        del shared_full_param_memo
+        self.full_params = full_params
+        self.full_param_infos = full_param_infos
+        self.shared_full_param_infos = shared_full_param_infos
+
+        # deregister the names as parameters (replace them with the detached version
+        # so that they won't appear in `parameters()` of the modules)
+        for p, (_, m, n) in zip(self.full_params, self.full_param_infos):
+            delattr(m, n)
+            assert not isinstance(p, torch.nn.Parameter)
+            setattr(m, n, p)  # This will set as plain attr
+        for (_, _, m, n, shared_m, shared_n) in self.shared_full_param_infos:
+            delattr(m, n)
+            shared_param = getattr(shared_m, shared_n)
+            assert not isinstance(shared_param, torch.nn.Parameter)
+            setattr(m, n, shared_param)
+
         self.numel_padded_per_param = []
-        for p in params_to_shard:
+        self.sharded_params = []
+        for p, (module_name, _, n) in zip(self.full_params, self.full_param_infos):
             assert not hasattr(p, "_is_sharded")
-            assert p.is_floating_point()
             assert p.dtype == torch.float32
 
-            # If world_size is 1, then we all-reduce grads instead of sharding.
-            p._is_sharded = self.world_size > 1
-            p._orig_size = p.data.size()
-
-            if not p._is_sharded:
-                p._is_sharded = False
-                self.numel_padded_per_param.append(0)
-                continue
-            p._is_sharded = True
-
-            # Replace p.data with the relevant shard.
-            orig_data = p.data
-            p.data, num_padded = self._get_shard(p.data)
+            shard_data, num_padded = self._get_shard(p.data)
+            p_shard = nn.Parameter(shard_data)
+            p_shard._orig_size = p.data.size()
+            p_shard._is_sharded = True
+            p_shard_name = f"fp32shard.{module_name}.{n}".replace(".", "__")
+            self.register_parameter(p_shard_name, p_shard)
             self.numel_padded_per_param.append(num_padded)
-            free_storage_(orig_data)
-            orig_data = None
+            self.sharded_params.append(p_shard)
+            p.data = p.data.new_zeros(1)  # free the original full parameter
 
-        assert len(self.numel_padded_per_param) == len(self.params)
+        assert len(self.numel_padded_per_param) == len(self.full_params)
+        assert len(self.sharded_params) == len(self.full_params)
 
     def _get_shard(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, int]:
         """Return the local shard of a full tensor."""
