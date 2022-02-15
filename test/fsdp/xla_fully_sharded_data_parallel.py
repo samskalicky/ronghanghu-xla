@@ -290,7 +290,7 @@ class FullyShardedDataParallel(nn.Module):
                 params.append(param)
 
         self._has_params = len(params) > 0
-        self._has_shared_params = False
+        # self._has_shared_params = False  # not supported in XLA FSDP
 
         # For now, it is either all flatten or none flatten. This will be extended to
         # multiple flatten groups in my next PR.
@@ -596,7 +596,9 @@ class FullyShardedDataParallel(nn.Module):
             self.register_parameter(p_shard_name, p_shard)
             self.numel_padded_per_param.append(num_padded)
             self.sharded_params.append(p_shard)
-            p.data = p.data.new_zeros(1)  # free the original full parameter
+            # free the original full parameter
+            p.data = p.data.new_zeros(1)
+            p._has_full_param = False
 
         assert len(self.numel_padded_per_param) == len(self.full_params)
         assert len(self.sharded_params) == len(self.full_params)
@@ -936,10 +938,10 @@ class FullyShardedDataParallel(nn.Module):
         """Initialization steps that should happen lazily, typically right
         before the first forward pass.
         """
-        # Initialize param attributes lazily, in case the param's dtype or
-        # device changes after __init__.
-        for p in self.params:
-            self._init_param_attributes(p)
+        # # Initialize param attributes lazily, in case the param's dtype or
+        # # device changes after __init__.
+        # for p in self.params:
+        #     self._init_param_attributes(p)  # not needed in XLA FSDP
 
         # Initialize _is_root and setup streams. These steps would ideally
         # happen in __init__, but _is_root can only be determined after the
@@ -954,47 +956,47 @@ class FullyShardedDataParallel(nn.Module):
             # backward pass.
             self.reshard_after_forward = False
 
-    @torch.no_grad()
-    def _init_param_attributes(self, p: Parameter) -> None:
-        """
-        We manage several attributes on each Parameter instance. The first two
-        are set by :func:`_shard_parameters_`:
+    # @torch.no_grad()
+    # def _init_param_attributes(self, p: Parameter) -> None:
+    #     """
+    #     We manage several attributes on each Parameter instance. The first two
+    #     are set by :func:`_shard_parameters_`:
 
-            ``_is_sharded``: ``True`` if the Parameter is sharded or ``False``
-                if the Parameter is intentionally not sharded (in which case we
-                will all-reduce grads for this param).
-            ``_orig_size``: the size of the original Parameter (before sharding)
+    #         ``_is_sharded``: ``True`` if the Parameter is sharded or ``False``
+    #             if the Parameter is intentionally not sharded (in which case we
+    #             will all-reduce grads for this param).
+    #         ``_orig_size``: the size of the original Parameter (before sharding)
 
-        The remaining attributes are set here:
-            ``_fp32_shard``: a single shard of the parameters in full precision
-                (typically FP32, but this is dependent on the dtype of the model
-                as it's passed in by the user). This can be on CPU or GPU
-                depending on the value of *``move_params_to_cpu``*.
-            ``_fp16_shard``: This will be a single shard of the parameters in FP16, used for all-gather.
-                This can be in FP16 or FP32 depending on the value of *``compute_dtype``* and
-                if params are offloaded to CPU.
-            ``_full_param_padded``: the full weight (padded to be evenly
-                divisible by ``world_size``), used for computation in the
-                forward and backward pass. This will be resized in place and
-                only materialized (via all-gather) as needed.
-        """
-        assert hasattr(p, "_is_sharded") and hasattr(p, "_orig_size")
-        if hasattr(p, "_fp32_shard"):
-            return
+    #     The remaining attributes are set here:
+    #         ``_fp32_shard``: a single shard of the parameters in full precision
+    #             (typically FP32, but this is dependent on the dtype of the model
+    #             as it's passed in by the user). This can be on CPU or GPU
+    #             depending on the value of *``move_params_to_cpu``*.
+    #         ``_fp16_shard``: This will be a single shard of the parameters in FP16, used for all-gather.
+    #             This can be in FP16 or FP32 depending on the value of *``compute_dtype``* and
+    #             if params are offloaded to CPU.
+    #         ``_full_param_padded``: the full weight (padded to be evenly
+    #             divisible by ``world_size``), used for computation in the
+    #             forward and backward pass. This will be resized in place and
+    #             only materialized (via all-gather) as needed.
+    #     """
+    #     assert hasattr(p, "_is_sharded") and hasattr(p, "_orig_size")
+    #     if hasattr(p, "_fp32_shard"):
+    #         return
 
-        # A single shard of the parameters in full precision.
-        p._fp32_shard = p.data
-        assert p._fp32_shard.dtype == torch.float32
-        p._fp16_shard = None
+    #     # A single shard of the parameters in full precision.
+    #     p._fp32_shard = p.data
+    #     assert p._fp32_shard.dtype == torch.float32
+    #     p._fp16_shard = None
 
-        # We also maintain a full-sized parameter of type self.compute_dtype
-        # (FP16 for mixed_precision or FP32 otherwise). We resize the
-        # storage to size 0 at init (here) and only materialize as needed. The
-        # storage may contain padding elements so that it is evenly divisible by
-        # world_size, although these padding elements will be removed before the
-        # relevant computation.
-        if p._is_sharded:
-            p._full_param_padded = None
+    #     # We also maintain a full-sized parameter of type self.compute_dtype
+    #     # (FP16 for mixed_precision or FP32 otherwise). We resize the
+    #     # storage to size 0 at init (here) and only materialize as needed. The
+    #     # storage may contain padding elements so that it is evenly divisible by
+    #     # world_size, although these padding elements will be removed before the
+    #     # relevant computation.
+    #     if p._is_sharded:
+    #         p._full_param_padded = None
 
     def _set_is_root(self) -> None:
         """If ``True``, implies that no other :class:`FullyShardedDataParallel`
@@ -1059,7 +1061,7 @@ class FullyShardedDataParallel(nn.Module):
         # also ensures that after the first forward, the optimizer state will be
         # initialized with the correct dtype and (sharded) size, since optimizer
         # state is typically initialized lazily in ``optim.step()``.
-        self._use_fp32_param_shard()
+        # self._use_fp32_param_shard()  # not needed in XLA FSDP
 
         # Register pre-backward hooks to all-gather the params for the backward
         # pass (if output's grad was needed). This won't register anything if
@@ -1116,8 +1118,8 @@ class FullyShardedDataParallel(nn.Module):
             # overhead.
             if self.reshard_after_forward:
                 self._rebuild_full_params()
-            else:
-                self._use_full_params()
+            # else:
+            #     self._use_full_params()
 
             # Only run the ``self._prep_grads_for_backward`` once per iteration (i.e. in case
             # it is multiple outputs or multiple forward passes).
@@ -1271,7 +1273,7 @@ class FullyShardedDataParallel(nn.Module):
             self._free_full_params([param])
 
         # Switch to FP32 shard after backward.
-        self._use_fp32_param_shard([param])
+        # self._use_fp32_param_shard([param])  # not needed in XLA FSDP
 
         if not self._require_backward_grad_sync:
             return
@@ -1407,101 +1409,39 @@ class FullyShardedDataParallel(nn.Module):
                     self._output_pre_backward_hook_registered.clear()
 
     @torch.no_grad()
-    def _rebuild_full_params(self, force_full_precision: bool = False) -> Optional[List[Tuple[torch.Tensor, bool]]]:
+    def _rebuild_full_params(self) -> None:
         """
         Gather all shards of params.
 
         Note, this is idempotent if full params are already gathered. Callers
         assume the idempotency. So please keep it that way.
-
-        Args:
-            force_full_precision (bool, Optional): by default params will be gathered
-                in ``compute_dtype`` (e.g., FP16), unless *force_full_precision* is
-                ``True``, in which case they will be gathered in full precision
-                (e.g., FP32), possibly in fresh storage. The parameter that's being
-                rebuilt will end up in full precision as well.
-
-        Returns:
-            A list of tuples, where the first element is the full-sized param
-            and the second element is a bool indicating if it's safe for the
-            caller to free the full-sized param. This will be ``None`` if
-            ``force_full_precision=False`` and the full params are already gathered.
         """
-        output_tensors: List[Tuple[torch.Tensor, bool]] = []
-
-        def update_p_data(custom_output_tensor: Optional[torch.Tensor] = None) -> None:
-            """
-            Helper function to update p.data pointer.
-
-            Args:
-                custom_output_tensor (torch.Tensor, Optional): if not None, this
-                tensor contains the data we just gathered.
-            """
-            if custom_output_tensor is not None:
-                assert p._is_sharded
-                p_data_padded = custom_output_tensor
-                output_tensors.append((p_data_padded, True))
-            elif not p._is_sharded:
-                # Here p.data == p._fp32_shard, so it's not safe to free.
-                p_data_padded = p.data
-                output_tensors.append((p_data_padded, False))
-            else:
-                p_data_padded = p._full_param_padded
-                output_tensors.append((p_data_padded, True))
-            # Trim any padding and reshape to match original size.
-            p.data = p_data_padded[: p._orig_size.numel()].view(p._orig_size)
-
-        if self._has_shared_params:
-            # self.has_full_params flag can be out of sync if a shared param is
-            # sharded by another FSDP instance. An example is that in eval case
-            # with reshard_after_forward=False but the sharing instance has
-            # reshard_after_forward=True. Then, on the second forward, the
-            # other instance can shard the shared param and but this instance
-            # can mistakenly think the full param is already gathered from the
-            # has_full_params flag.
-            #
-            # Therefore, we update the flag accordingly here.
-            self.has_full_params = not any(p._full_param_padded is None for p in self.params)
-
-        # Early exit if we already have full params and don't need full precision.
-        if self.has_full_params and not force_full_precision:
-            for p in self.params:
-                update_p_data()
-            return output_tensors
-
+        if self.has_full_params:
+            return
+        for p, p_shard in zip(self.full_params, self.sharded_params):
+            if not p._has_full_param:
+                # gather full parameter from shards
+                p_padded = xm.all_gather(p_shard).flatten().detach()
+                p.data = p_padded[: p_shard._orig_size.numel()].view(p_shard._orig_size)
+                p._has_full_param = True
         self.has_full_params = True
-        for p in self.params:
-            if not p._is_sharded:  # e.g., when world_size == 1
-                update_p_data()
-            else:
-                # Skip if already built. Only shared param can be rebuilt multiple times.
-                # A corner case is p._orig_size = (1,), which means the shape equality is
-                # not a perfect check. But we assume we don't share a param with shape (1,).
-                if p.data.shape == p._orig_size and hasattr(p, "_is_shared") and p._is_shared:
-                    continue
 
-                p._full_param_padded = xm.all_gather(p.data).flatten()
-                # Set p.data = output_tensor (with padding trimmed)
-                update_p_data(p._full_param_padded)
+    # @torch.no_grad()
+    # def _use_full_params(self) -> None:
+    #     """
+    #     Switch p.data pointers to use the full params.
 
-        return output_tensors
+    #     Note: this assumes full params are already gathered.
 
-    @torch.no_grad()
-    def _use_full_params(self) -> None:
-        """
-        Switch p.data pointers to use the full params.
-
-        Note: this assumes full params are already gathered.
-
-        Note: this might be called after full_params is already in used. So please
-              make sure it is idempotent in that case.
-        """
-        assert self.has_full_params
-        for p in self.params:
-            if not p._is_sharded:
-                pass
-            else:
-                p.data = p._full_param_padded[: p._orig_size.numel()].view(p._orig_size)
+    #     Note: this might be called after full_params is already in used. So please
+    #           make sure it is idempotent in that case.
+    #     """
+    #     assert self.has_full_params
+    #     for p in self.params:
+    #         if not p._is_sharded:
+    #             pass
+    #         else:
+    #             p.data = p._full_param_padded[: p._orig_size.numel()].view(p._orig_size)
 
     @torch.no_grad()
     def _prep_grads_for_backward(self) -> None:
@@ -1529,19 +1469,13 @@ class FullyShardedDataParallel(nn.Module):
     def _free_full_params(self, params: Optional[List[Parameter]] = None) -> None:
         """Free up storage for full parameters."""
         if params is None:
-            params = self.params
+            params = self.full_params
         self.has_full_params = False
         for p in params:
-            if not p._is_sharded:  # e.g., world_size == 1
-                continue
-            # There may be external references to the Tensor Storage that we
-            # can't modify, such as references that are created by
-            # ctx.save_for_backward in the forward pass. Thus when we
-            # unshard parameters, we should reuse the original Tensor
-            # Storage object and unshard it in-place. For now, just resize
-            # the Storage to 0 to save memory.
-            free_storage_(p._full_param_padded)
-            p._full_param_padded = None
+            if p._has_full_param:
+                # free the original full parameter
+                p.data = p.data.new_zeros(1)
+                p._has_full_param = False
 
     # def local_metadata_dict(self) -> Dict[str, Any]:
     #     """
@@ -1667,13 +1601,13 @@ class FullyShardedDataParallel(nn.Module):
 
     #     return consolidated_weights
 
-    @torch.no_grad()
-    def _use_fp32_param_shard(self, params: Optional[List[Parameter]] = None) -> None:
-        """Use FP32 shard for a list of params."""
-        if params is None:
-            params = self.params
-        for p in params:
-            p.data = p._fp32_shard
+    # @torch.no_grad()
+    # def _use_fp32_param_shard(self, params: Optional[List[Parameter]] = None) -> None:
+    #     """Use FP32 shard for a list of params."""
+    #     if params is None:
+    #         params = self.params
+    #     for p in params:
+    #         p.data = p._fp32_shard
 
     def assert_state(self, state: Union[TrainingState, List[TrainingState]]) -> None:
         """Assert we are in the given state."""
