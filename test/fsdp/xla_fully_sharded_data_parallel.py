@@ -69,7 +69,7 @@ class TrainingState(Enum):
     FORWARD = auto()
     BACKWARD_PRE = auto()
     BACKWARD_POST = auto()
-    SUMMON_FULL_PARAMS = auto()
+    # SUMMON_FULL_PARAMS = auto()  # not supported in XLA FSDP
 
 
 class FullyShardedDataParallel(nn.Module):
@@ -315,12 +315,12 @@ class FullyShardedDataParallel(nn.Module):
         # The self._num_flatten_params and self._param_name_groups are computed
         # and kept here to support summon_full_params and shard-to-full weight
         # consolidation.
-        self.params = cast(List[Parameter], self._fsdp_wrapped_module.flat_params) + non_flatten_params
-        self._num_flatten_params = len(self._fsdp_wrapped_module.flat_params)
-        self._param_name_groups = param_name_groups
+        params_to_shard = cast(List[Parameter], self._fsdp_wrapped_module.flat_params) + non_flatten_params
+        # self._num_flatten_params = len(self._fsdp_wrapped_module.flat_params)  # not supported in XLA FSDP
+        # self._param_name_groups = param_name_groups  # not supported in XLA FSDP
 
         # Shard module parameters in place
-        self._shard_parameters_()
+        self._shard_parameters_(params_to_shard)
 
         # Make sure all parameters are sharded.
         for n, p in self.named_parameters():
@@ -340,17 +340,17 @@ class FullyShardedDataParallel(nn.Module):
 
         # Register hook after state_dict() to remove the "_fsdp_wrapped_module."
         # prefix and before load_state_dict() to add it back.
-        self._register_state_dict_hook(_post_state_dict_hook)
-        self._register_load_state_dict_pre_hook(_pre_load_state_dict_hook)
+        # self._register_state_dict_hook(_post_state_dict_hook)  # not supported in XLA FSDP
+        # self._register_load_state_dict_pre_hook(_pre_load_state_dict_hook)  # not supported in XLA FSDP
 
         # Flag to indicate whether state_dict() should automatically summon the
         # full params. This defaults to True, but may be set to False if the
         # user explicitly requests the local state dict via local_state_dict().
-        self._return_full_state_dict = True
+        # self._return_full_state_dict = True  # not supported in XLA FSDP
         init_end = time.time()
 
         logging.debug(
-            f"FSDP.__init__(done): total_init_time: {(init_end - init_start): .4f} num_params: {(sum(p.numel() for p in self.params))}"
+            f"FSDP.__init__(done): total_init_time: {(init_end - init_start): .4f}"
         )
 
         # Flag to guard against preparing gradients multiple times per iteration.
@@ -385,69 +385,69 @@ class FullyShardedDataParallel(nn.Module):
         assert isinstance(self._fsdp_wrapped_module, FlattenParamsWrapper)
         return self._fsdp_wrapped_module
 
-    def append_shared_param(self, p: Parameter) -> None:
-        """Add a param that's already owned by another FSDP wrapper.
+    # def append_shared_param(self, p: Parameter) -> None:
+    #     """Add a param that's already owned by another FSDP wrapper.
 
-            .. warning:: This is experimental!
+    #         .. warning:: This is experimental!
 
-            This only works with all sharing FSDP modules are un-flattened.
+    #         This only works with all sharing FSDP modules are un-flattened.
 
-            p must to be already sharded by the owning module.
+    #         p must to be already sharded by the owning module.
 
-            Check the corresponding unit test to see how is it used and tested.
-            In particular, the sharing FSDP wrappers are "siblings" not "parent"
-            and "child" of each other in the nested module structure.
+    #         Check the corresponding unit test to see how is it used and tested.
+    #         In particular, the sharing FSDP wrappers are "siblings" not "parent"
+    #         and "child" of each other in the nested module structure.
 
-        Args:
-            p (Parameter):
-                The shared parameter.
-        """
-        assert self._is_root is None
-        assert not self.flatten_parameters
-        assert isinstance(p, Parameter)
-        assert p._is_sharded
-        p._is_shared = True
-        assert (
-            len(list(filter(lambda p: not (hasattr(p, "_is_shared") and p._is_shared), self.params))) > 0
-        ), "Must have at least 1 non-shared param."
-        self.params.append(p)
-        self._has_shared_params = True
+    #     Args:
+    #         p (Parameter):
+    #             The shared parameter.
+    #     """
+    #     assert self._is_root is None
+    #     assert not self.flatten_parameters
+    #     assert isinstance(p, Parameter)
+    #     assert p._is_sharded
+    #     p._is_shared = True
+    #     assert (
+    #         len(list(filter(lambda p: not (hasattr(p, "_is_shared") and p._is_shared), self.params))) > 0
+    #     ), "Must have at least 1 non-shared param."
+    #     self.params.append(p)
+    #     self._has_shared_params = True
 
-    def non_shared_params(self) -> List[nn.Parameter]:
-        """Return the list of non-shared parameters."""
-        if self._has_shared_params:
-            return list(filter(lambda p: not (hasattr(p, "_is_shared") and p._is_shared), self.params))
-        else:
-            return self.params
+    # def non_shared_params(self) -> List[nn.Parameter]:
+    #     """Return the list of non-shared parameters."""
+    #     if self._has_shared_params:
+    #         return list(filter(lambda p: not (hasattr(p, "_is_shared") and p._is_shared), self.params))
+    #     else:
+    #         return self.params
 
-    def apply(self, fn: Callable[[nn.Module], None]) -> "FullyShardedDataParallel":
-        """
-        Applies ``fn`` recursively to every submodule (as returned by
-        ``.children()``) as well as self. Typical use includes initializing the
-        parameters of a model.
+    # def apply(self, fn: Callable[[nn.Module], None]) -> "FullyShardedDataParallel":
+    #     """
+    #     Applies ``fn`` recursively to every submodule (as returned by
+    #     ``.children()``) as well as self. Typical use includes initializing the
+    #     parameters of a model.
 
-        Compared to ``torch.nn.Module.apply``, this version additionally gathers
-        the full parameters before applying ``fn``. It should not be called from
-        within another ``summon_full_params`` context.
+    #     Compared to ``torch.nn.Module.apply``, this version additionally gathers
+    #     the full parameters before applying ``fn``. It should not be called from
+    #     within another ``summon_full_params`` context.
 
-        Args:
-            fn (nn.Module): function to be applied to each submodule
+    #     Args:
+    #         fn (nn.Module): function to be applied to each submodule
 
-        Returns:
-            Module: self
-        """
-        is_uninitialized = self._is_root is None
-        self.assert_state(TrainingState.IDLE)
-        with self.summon_full_params(recurse=False):
-            return_value = super().apply(fn)
-        # summon_full_params will call _lazy_init, which sets _is_root. However,
-        # apply() may be called directly on children instances to do weight
-        # init, so we should reset the _is_root flag in this case.
-        if is_uninitialized and self._is_root:
-            for module in self.modules():
-                if isinstance(module, FullyShardedDataParallel):
-                    module._reset_lazy_init()
-        return return_value
+    #     Returns:
+    #         Module: self
+    #     """
+    #     is_uninitialized = self._is_root is None
+    #     self.assert_state(TrainingState.IDLE)
+    #     with self.summon_full_params(recurse=False):
+    #         return_value = super().apply(fn)
+    #     # summon_full_params will call _lazy_init, which sets _is_root. However,
+    #     # apply() may be called directly on children instances to do weight
+    #     # init, so we should reset the _is_root flag in this case.
+    #     if is_uninitialized and self._is_root:
+    #         for module in self.modules():
+    #             if isinstance(module, FullyShardedDataParallel):
+    #                 module._reset_lazy_init()
+    #     return return_value
 
     @property
     def params_with_grad(self) -> List[Parameter]:
@@ -517,7 +517,7 @@ class FullyShardedDataParallel(nn.Module):
         return total_norm
 
     @torch.no_grad()
-    def _shard_parameters_(self) -> None:
+    def _shard_parameters_(self, params_to_shard) -> None:
         """
         At initialization we wrap a module with full parameters and shard the
         parameters in-place. Sharding is implemented by viewing each parameter
@@ -541,8 +541,10 @@ class FullyShardedDataParallel(nn.Module):
         allocate less memory for optimizer state, avoiding redundancy across
         data parallel workers.
         """
+        # Here we implement it in a different manner from the fairscale FSDP
+        # We delete the original module parameters and create the sharded ones
         self.numel_padded_per_param = []
-        for p in self.params:
+        for p in params_to_shard:
             assert not hasattr(p, "_is_sharded")
             assert p.is_floating_point()
             assert p.dtype == torch.float32
@@ -640,256 +642,256 @@ class FullyShardedDataParallel(nn.Module):
         del self.orig_sizes
         self._reset_lazy_init()
 
-    def parameters(self, recurse: bool = True) -> Iterator[Parameter]:
-        """Returns an iterator over the module parameters, yielding all the parameters
-        part of the model.
-        """
+    # def parameters(self, recurse: bool = True) -> Iterator[Parameter]:
+    #     """Returns an iterator over the module parameters, yielding all the parameters
+    #     part of the model.
+    #     """
 
-        return super().parameters(recurse=recurse)
+    #     return super().parameters(recurse=recurse)
 
-    def named_parameters(self, *args: Any, **kwargs: Any) -> Iterator[Tuple[str, Parameter]]:
-        """Returns an iterator over the module parameters, yielding both the name of the
-        parameter as well as the parameter.
+    # def named_parameters(self, *args: Any, **kwargs: Any) -> Iterator[Tuple[str, Parameter]]:
+    #     """Returns an iterator over the module parameters, yielding both the name of the
+    #     parameter as well as the parameter.
 
-        With FSDP, the `named_parameters` function implemented in `nn.Module` will not
-        be able to return the name and param when we use flattened parameters unless
-        we call this function under a `summon_full_params` context.
+    #     With FSDP, the `named_parameters` function implemented in `nn.Module` will not
+    #     be able to return the name and param when we use flattened parameters unless
+    #     we call this function under a `summon_full_params` context.
 
-        If you want the full param to be returned, you should call this function
-        under a `summon_full_params` context when using flattened or original params.
-        """
-        named_param = super().named_parameters(*args, **kwargs)
-        for name, param in named_param:
-            if (
-                hasattr(self, "flatten_parameters")
-                and self.flatten_parameters
-                and hasattr(self, "training_state")
-                and self.training_state != TrainingState.SUMMON_FULL_PARAMS
-            ):
-                yield name, param
-            else:
-                yield _clean_path(name), param
+    #     If you want the full param to be returned, you should call this function
+    #     under a `summon_full_params` context when using flattened or original params.
+    #     """
+    #     named_param = super().named_parameters(*args, **kwargs)
+    #     for name, param in named_param:
+    #         if (
+    #             hasattr(self, "flatten_parameters")
+    #             and self.flatten_parameters
+    #             and hasattr(self, "training_state")
+    #             and self.training_state != TrainingState.SUMMON_FULL_PARAMS
+    #         ):
+    #             yield name, param
+    #         else:
+    #             yield _clean_path(name), param
 
     def __getitem__(self, key: int) -> Any:
         """Forward indexing calls in case the module is a nn.Sequential."""
         return self.module.__getitem__(key)
 
-    @typing.overload
-    def state_dict(
-        self, destination: Mapping[str, torch.Tensor], prefix: str = ..., keep_vars: bool = ...
-    ) -> Mapping[str, torch.Tensor]:
-        ...
+    # @typing.overload
+    # def state_dict(
+    #     self, destination: Mapping[str, torch.Tensor], prefix: str = ..., keep_vars: bool = ...
+    # ) -> Mapping[str, torch.Tensor]:
+    #     ...
 
-    @typing.overload
-    def state_dict(self, prefix: str = ..., keep_vars: bool = ...) -> "OrderedDict[str, torch.Tensor]":
-        ...
+    # @typing.overload
+    # def state_dict(self, prefix: str = ..., keep_vars: bool = ...) -> "OrderedDict[str, torch.Tensor]":
+    #     ...
 
-    # Since we have overloads above, we can use Any here.
-    def state_dict(self, *args: Any, **kwargs: Any) -> Any:
-        """
-        Returns the whole (unsharded) state of the module. Parameters are not
-        sharded, so the resulting state_dict can be loaded directly by the
-        wrapped Module without any sharding-specific logic. Returned tensors
-        will be full precision (e.g., FP32).
+    # # Since we have overloads above, we can use Any here.
+    # def state_dict(self, *args: Any, **kwargs: Any) -> Any:
+    #     """
+    #     Returns the whole (unsharded) state of the module. Parameters are not
+    #     sharded, so the resulting state_dict can be loaded directly by the
+    #     wrapped Module without any sharding-specific logic. Returned tensors
+    #     will be full precision (e.g., FP32).
 
-        .. warning:: This needs to be called on all ranks, since synchronization
-            primitives will be used.
-        """
-        self._lazy_init()
+    #     .. warning:: This needs to be called on all ranks, since synchronization
+    #         primitives will be used.
+    #     """
+    #     self._lazy_init()
 
-        if self._return_full_state_dict:
-            if self.training_state != TrainingState.SUMMON_FULL_PARAMS:
-                with self.summon_full_params(recurse=False, volatile=True):
-                    state_dict = super().state_dict(*args, **kwargs)
-            else:
-                state_dict = super().state_dict(*args, **kwargs)
-        else:
-            state_dict = self.module.flat_state_dict(*args, **kwargs)
+    #     if self._return_full_state_dict:
+    #         if self.training_state != TrainingState.SUMMON_FULL_PARAMS:
+    #             with self.summon_full_params(recurse=False, volatile=True):
+    #                 state_dict = super().state_dict(*args, **kwargs)
+    #         else:
+    #             state_dict = super().state_dict(*args, **kwargs)
+    #     else:
+    #         state_dict = self.module.flat_state_dict(*args, **kwargs)
 
-        return state_dict
+    #     return state_dict
 
-    @typing.overload
-    def local_state_dict(
-        self, destination: Mapping[str, torch.Tensor], prefix: str = ..., keep_vars: bool = ...
-    ) -> Mapping[str, torch.Tensor]:
-        ...
+    # @typing.overload
+    # def local_state_dict(
+    #     self, destination: Mapping[str, torch.Tensor], prefix: str = ..., keep_vars: bool = ...
+    # ) -> Mapping[str, torch.Tensor]:
+    #     ...
 
-    @typing.overload
-    def local_state_dict(self, prefix: str = ..., keep_vars: bool = ...) -> "OrderedDict[str, torch.Tensor]":
-        ...
+    # @typing.overload
+    # def local_state_dict(self, prefix: str = ..., keep_vars: bool = ...) -> "OrderedDict[str, torch.Tensor]":
+    #     ...
 
-    # Since we have overloads above, we can use Any here.
-    def local_state_dict(self, *args: Any, **kwargs: Any) -> Any:
-        """
-        Returns the local (sharded) state of the module. Parameters are sharded,
-        so the resulting state_dict can only be loaded after the Module has been
-        wrapped with FSDP.
-        """
-        with contextlib.ExitStack() as stack:
-            # Tell any nested FSDP instances not to auto summon full params.
-            for module in self.modules():  # includes self
-                if isinstance(module, FullyShardedDataParallel):
-                    stack.enter_context(module._no_return_full_state_dict())
-            # We need to specially call FSDP's state_dict function in case
-            # self.state_dict is a function from a child class of FSDP.
-            return FullyShardedDataParallel.state_dict(self, *args, **kwargs)
+    # # Since we have overloads above, we can use Any here.
+    # def local_state_dict(self, *args: Any, **kwargs: Any) -> Any:
+    #     """
+    #     Returns the local (sharded) state of the module. Parameters are sharded,
+    #     so the resulting state_dict can only be loaded after the Module has been
+    #     wrapped with FSDP.
+    #     """
+    #     with contextlib.ExitStack() as stack:
+    #         # Tell any nested FSDP instances not to auto summon full params.
+    #         for module in self.modules():  # includes self
+    #             if isinstance(module, FullyShardedDataParallel):
+    #                 stack.enter_context(module._no_return_full_state_dict())
+    #         # We need to specially call FSDP's state_dict function in case
+    #         # self.state_dict is a function from a child class of FSDP.
+    #         return FullyShardedDataParallel.state_dict(self, *args, **kwargs)
 
-    @contextlib.contextmanager
-    def _no_return_full_state_dict(self) -> Generator:
-        backup = self._return_full_state_dict
-        self._return_full_state_dict = False
+    # @contextlib.contextmanager
+    # def _no_return_full_state_dict(self) -> Generator:
+    #     backup = self._return_full_state_dict
+    #     self._return_full_state_dict = False
 
-        try:
-            yield
-        finally:
-            self._return_full_state_dict = backup
+    #     try:
+    #         yield
+    #     finally:
+    #         self._return_full_state_dict = backup
 
-    def _load_state_dict(
-        self, state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], strict: bool = True
-    ) -> NamedTuple:
-        """
-        Load a whole (unsharded) state_dict.
+    # def _load_state_dict(
+    #     self, state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], strict: bool = True
+    # ) -> NamedTuple:
+    #     """
+    #     Load a whole (unsharded) state_dict.
 
-        .. warning:: This needs to be called on all ranks, since synchronization
-            primitives will be used.
-        """
-        if self._return_full_state_dict:
-            with self.summon_full_params():
-                return self.module.load_state_dict(state_dict, strict)
-        else:
-            self._lazy_init()
-            return self.module.load_state_dict(state_dict, strict)
+    #     .. warning:: This needs to be called on all ranks, since synchronization
+    #         primitives will be used.
+    #     """
+    #     if self._return_full_state_dict:
+    #         with self.summon_full_params():
+    #             return self.module.load_state_dict(state_dict, strict)
+    #     else:
+    #         self._lazy_init()
+    #         return self.module.load_state_dict(state_dict, strict)
 
-    def load_state_dict(
-        self, state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], strict: bool = True
-    ) -> NamedTuple:
-        return self._load_state_dict(state_dict, strict)
+    # def load_state_dict(
+    #     self, state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], strict: bool = True
+    # ) -> NamedTuple:
+    #     return self._load_state_dict(state_dict, strict)
 
-    def load_local_state_dict(
-        self, state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], strict: bool = True
-    ) -> NamedTuple:
-        """Load a local (sharded) state_dict."""
-        with contextlib.ExitStack() as stack:
-            # Tell any nested FSDP instances not to auto summon full params.
-            for module in self.modules():  # includes self
-                if isinstance(module, FullyShardedDataParallel):
-                    stack.enter_context(module._no_return_full_state_dict())
-            output = self._load_state_dict(state_dict, strict)
-        return output
+    # def load_local_state_dict(
+    #     self, state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], strict: bool = True
+    # ) -> NamedTuple:
+    #     """Load a local (sharded) state_dict."""
+    #     with contextlib.ExitStack() as stack:
+    #         # Tell any nested FSDP instances not to auto summon full params.
+    #         for module in self.modules():  # includes self
+    #             if isinstance(module, FullyShardedDataParallel):
+    #                 stack.enter_context(module._no_return_full_state_dict())
+    #         output = self._load_state_dict(state_dict, strict)
+    #     return output
 
-    @contextlib.contextmanager
-    def no_sync(self) -> Generator:
-        """
-        A context manager to disable gradient synchronizations across FSDP
-        processes. Within this context, gradients will be accumulated on module
-        variables, which will later be synchronized in the first
-        forward-backward pass after exiting the context.
+    # @contextlib.contextmanager
+    # def no_sync(self) -> Generator:
+    #     """
+    #     A context manager to disable gradient synchronizations across FSDP
+    #     processes. Within this context, gradients will be accumulated on module
+    #     variables, which will later be synchronized in the first
+    #     forward-backward pass after exiting the context.
 
-        .. note:: This likely results in higher memory usage because FSDP will
-            accumulate the full model gradients (instead of gradient shards)
-            until the eventual sync.
+    #     .. note:: This likely results in higher memory usage because FSDP will
+    #         accumulate the full model gradients (instead of gradient shards)
+    #         until the eventual sync.
 
-        .. note:: Gradient accumulation can be done without this context,
-            avoiding the extra GPU memory overhead, but with the extra
-            networking overhead.
-        """
-        self._lazy_init()
-        assert self._is_root, "no_sync on inner FSDP is not supported"
-        self.assert_state(TrainingState.IDLE)
-        # This instance may wrap other FSDP instances and we
-        # need to set all of them to accumulate gradients.
-        old_flags = []
-        for m in self.modules():  # includes self
-            if isinstance(m, FullyShardedDataParallel):
-                old_flags.append((m, m._require_backward_grad_sync))
-                m._require_backward_grad_sync = False
-        try:
-            yield
-        finally:
-            for m, old_flag in old_flags:
-                assert m._require_backward_grad_sync is False
-                m._require_backward_grad_sync = old_flag
+    #     .. note:: Gradient accumulation can be done without this context,
+    #         avoiding the extra GPU memory overhead, but with the extra
+    #         networking overhead.
+    #     """
+    #     self._lazy_init()
+    #     assert self._is_root, "no_sync on inner FSDP is not supported"
+    #     self.assert_state(TrainingState.IDLE)
+    #     # This instance may wrap other FSDP instances and we
+    #     # need to set all of them to accumulate gradients.
+    #     old_flags = []
+    #     for m in self.modules():  # includes self
+    #         if isinstance(m, FullyShardedDataParallel):
+    #             old_flags.append((m, m._require_backward_grad_sync))
+    #             m._require_backward_grad_sync = False
+    #     try:
+    #         yield
+    #     finally:
+    #         for m, old_flag in old_flags:
+    #             assert m._require_backward_grad_sync is False
+    #             m._require_backward_grad_sync = old_flag
 
-    @contextlib.contextmanager
-    def summon_full_params(self, recurse: bool = True, volatile: bool = False) -> Generator:
-        """
-        A context manager to expose full params for the current FSDP instance.
-        Can be useful *after* forward/backward for a model to get the params for
-        additional processing or checking. Parameters will be gathered in full
-        precision (e.g., FP32).
+    # @contextlib.contextmanager
+    # def summon_full_params(self, recurse: bool = True, volatile: bool = False) -> Generator:
+    #     """
+    #     A context manager to expose full params for the current FSDP instance.
+    #     Can be useful *after* forward/backward for a model to get the params for
+    #     additional processing or checking. Parameters will be gathered in full
+    #     precision (e.g., FP32).
 
-        .. note:: This can be used on inner FSDPs.
+    #     .. note:: This can be used on inner FSDPs.
 
-        .. note:: This can *not* be used within a forward or backward pass. Nor
-            can forward and backward be started from within this context.
+    #     .. note:: This can *not* be used within a forward or backward pass. Nor
+    #         can forward and backward be started from within this context.
 
-        .. note:: The full parameters will be freed after the context manager
-            exits; it is up to the caller to clone them if needed.
+    #     .. note:: The full parameters will be freed after the context manager
+    #         exits; it is up to the caller to clone them if needed.
 
-        .. note:: The full parameters can be modified, but only the portion
-            corresponding to the local param shard will persist after the
-            context manager exits (unless ``volatile=True``, in which case there
-            are no guarantees about persistence).
+    #     .. note:: The full parameters can be modified, but only the portion
+    #         corresponding to the local param shard will persist after the
+    #         context manager exits (unless ``volatile=True``, in which case there
+    #         are no guarantees about persistence).
 
-        Args:
-            recurse (bool, Optional): recursively summon all params for nested
-                FSDP instances (default: True)
-            volatile (bool, Optional): if ``True``, modifications to params are
-                not guaranteed to persist after the context manager exists;
-                enabling this can be slightly more efficient (default: False)
-        """
-        if recurse:
-            with contextlib.ExitStack() as stack:
-                # Summon all params for any nested FSDP instances.
-                for module in self.modules():
-                    if isinstance(module, FullyShardedDataParallel):
-                        stack.enter_context(module.summon_full_params(recurse=False, volatile=volatile))
-                # Yield to the caller, with full params in all nested instances.
-                yield
-            # Exiting from the ExitStack will re-shard params.
-            return
-        else:
-            self._lazy_init()
-            self.assert_state(TrainingState.IDLE)
-            # Set the state so that we assert when trying to go into
-            # forward/backward.
-            self.training_state = TrainingState.SUMMON_FULL_PARAMS
-            full_tensors = self._rebuild_full_params(force_full_precision=True)
-            assert full_tensors is not None
-            with contextlib.ExitStack() as stack:
-                if self.module.is_flattened:
-                    # Update flattened views to point to fully-sized tensors. We
-                    # use self.params instead of full_tensors since the
-                    # latter may contain padding.
-                    stack.enter_context(
-                        self.module.unflatten_params(
-                            flat_params=[p.data for p in self.params[: self._num_flatten_params]]
-                        )
-                    )
-                try:
-                    yield
-                finally:
-                    stack.close()
-                    non_shared_params = self.params
-                    # filter out shared params for all but the owner FSDP module.
-                    if len(full_tensors) < len(non_shared_params):
-                        non_shared_params = self.non_shared_params()
-                    assert len(full_tensors) == len(
-                        non_shared_params
-                    ), f"{len(full_tensors)} vs. {len(non_shared_params)}"
-                    for p, (full_tensor, safe_to_free) in zip(non_shared_params, full_tensors):
-                        if not volatile:
-                            # Copy any changes made to the full params back into
-                            # the corresponding local shards.
-                            local_shard, _ = self._get_shard(full_tensor)
-                            p._fp32_shard.copy_(local_shard.view_as(p._fp32_shard))
-                        if safe_to_free:
-                            free_storage_(full_tensor)
-                            full_tensor = None
-                    del full_tensors
-                    self.has_full_params = False
-                    self._use_fp32_param_shard()
-                    self.training_state = TrainingState.IDLE
+    #     Args:
+    #         recurse (bool, Optional): recursively summon all params for nested
+    #             FSDP instances (default: True)
+    #         volatile (bool, Optional): if ``True``, modifications to params are
+    #             not guaranteed to persist after the context manager exists;
+    #             enabling this can be slightly more efficient (default: False)
+    #     """
+    #     if recurse:
+    #         with contextlib.ExitStack() as stack:
+    #             # Summon all params for any nested FSDP instances.
+    #             for module in self.modules():
+    #                 if isinstance(module, FullyShardedDataParallel):
+    #                     stack.enter_context(module.summon_full_params(recurse=False, volatile=volatile))
+    #             # Yield to the caller, with full params in all nested instances.
+    #             yield
+    #         # Exiting from the ExitStack will re-shard params.
+    #         return
+    #     else:
+    #         self._lazy_init()
+    #         self.assert_state(TrainingState.IDLE)
+    #         # Set the state so that we assert when trying to go into
+    #         # forward/backward.
+    #         self.training_state = TrainingState.SUMMON_FULL_PARAMS
+    #         full_tensors = self._rebuild_full_params(force_full_precision=True)
+    #         assert full_tensors is not None
+    #         with contextlib.ExitStack() as stack:
+    #             if self.module.is_flattened:
+    #                 # Update flattened views to point to fully-sized tensors. We
+    #                 # use self.params instead of full_tensors since the
+    #                 # latter may contain padding.
+    #                 stack.enter_context(
+    #                     self.module.unflatten_params(
+    #                         flat_params=[p.data for p in self.params[: self._num_flatten_params]]
+    #                     )
+    #                 )
+    #             try:
+    #                 yield
+    #             finally:
+    #                 stack.close()
+    #                 non_shared_params = self.params
+    #                 # filter out shared params for all but the owner FSDP module.
+    #                 if len(full_tensors) < len(non_shared_params):
+    #                     non_shared_params = self.non_shared_params()
+    #                 assert len(full_tensors) == len(
+    #                     non_shared_params
+    #                 ), f"{len(full_tensors)} vs. {len(non_shared_params)}"
+    #                 for p, (full_tensor, safe_to_free) in zip(non_shared_params, full_tensors):
+    #                     if not volatile:
+    #                         # Copy any changes made to the full params back into
+    #                         # the corresponding local shards.
+    #                         local_shard, _ = self._get_shard(full_tensor)
+    #                         p._fp32_shard.copy_(local_shard.view_as(p._fp32_shard))
+    #                     if safe_to_free:
+    #                         free_storage_(full_tensor)
+    #                         full_tensor = None
+    #                 del full_tensors
+    #                 self.has_full_params = False
+    #                 self._use_fp32_param_shard()
+    #                 self.training_state = TrainingState.IDLE
 
     def _reset_lazy_init(self) -> None:
         """Reset instance so :func:`_lazy_init` will run on the next forward."""
@@ -1508,129 +1510,129 @@ class FullyShardedDataParallel(nn.Module):
             free_storage_(p._full_param_padded)
             p._full_param_padded = None
 
-    def local_metadata_dict(self) -> Dict[str, Any]:
-        """
-        Get the information needed to reconstruct the model from shards offline.
+    # def local_metadata_dict(self) -> Dict[str, Any]:
+    #     """
+    #     Get the information needed to reconstruct the model from shards offline.
 
-        See the `consolidate_shard_weights` method below.
-        """
-        param_metadata = []
-        for path, m in self.named_modules():
-            if isinstance(m, FullyShardedDataParallel):
-                metadata: Dict[str, Any] = {}
-                metadata["fsdp_path"] = _clean_path(path)
-                metadata["params"] = {}
+    #     See the `consolidate_shard_weights` method below.
+    #     """
+    #     param_metadata = []
+    #     for path, m in self.named_modules():
+    #         if isinstance(m, FullyShardedDataParallel):
+    #             metadata: Dict[str, Any] = {}
+    #             metadata["fsdp_path"] = _clean_path(path)
+    #             metadata["params"] = {}
 
-                shared_param_info = []
-                for (mpath_dst, mpath_src, _, src_name, _, dst_name) in m._shared_param_infos:
-                    src_param_path = _clean_path(mpath_src + "." + src_name if mpath_src else src_name)
-                    dst_param_path = _clean_path(mpath_dst + "." + dst_name if mpath_dst else dst_name)
-                    shared_param_info.append((src_param_path, dst_param_path))
-                metadata["shared_param_info"] = shared_param_info
+    #             shared_param_info = []
+    #             for (mpath_dst, mpath_src, _, src_name, _, dst_name) in m._shared_param_infos:
+    #                 src_param_path = _clean_path(mpath_src + "." + src_name if mpath_src else src_name)
+    #                 dst_param_path = _clean_path(mpath_dst + "." + dst_name if mpath_dst else dst_name)
+    #                 shared_param_info.append((src_param_path, dst_param_path))
+    #             metadata["shared_param_info"] = shared_param_info
 
-                for i, p in enumerate(m.params):
-                    if i < m._num_flatten_params:
-                        backing_param_name = m.module.flat_param_names[i]
-                        names, shapes, numels = m.module.metadata(i)
-                    else:
-                        assert len(m._param_name_groups[i]) == 1
-                        backing_param_name = m._param_name_groups[i][0]
-                        names = [backing_param_name]
-                        shapes = [p._orig_size]
-                        numels = [p._orig_size.numel()]
-                    backing_param_name = _clean_path(backing_param_name)
-                    metadata["params"][backing_param_name] = {
-                        "names": [_clean_path(n) for n in names],  # A list of str.
-                        "shapes": shapes,  # A list of torch.Size.
-                        "numels": numels,  # A list of int.
-                        "padding": m.numel_padded_per_param[i],  # An int for padding added to the backing parameter.
-                    }
-                param_metadata.append(metadata)
+    #             for i, p in enumerate(m.params):
+    #                 if i < m._num_flatten_params:
+    #                     backing_param_name = m.module.flat_param_names[i]
+    #                     names, shapes, numels = m.module.metadata(i)
+    #                 else:
+    #                     assert len(m._param_name_groups[i]) == 1
+    #                     backing_param_name = m._param_name_groups[i][0]
+    #                     names = [backing_param_name]
+    #                     shapes = [p._orig_size]
+    #                     numels = [p._orig_size.numel()]
+    #                 backing_param_name = _clean_path(backing_param_name)
+    #                 metadata["params"][backing_param_name] = {
+    #                     "names": [_clean_path(n) for n in names],  # A list of str.
+    #                     "shapes": shapes,  # A list of torch.Size.
+    #                     "numels": numels,  # A list of int.
+    #                     "padding": m.numel_padded_per_param[i],  # An int for padding added to the backing parameter.
+    #                 }
+    #             param_metadata.append(metadata)
 
-        buffer_names = [_clean_path(buffer_name) for buffer_name, _ in self.named_buffers(recurse=True)]
-        return dict(param_metadata=param_metadata, buffer_names=buffer_names)
+    #     buffer_names = [_clean_path(buffer_name) for buffer_name, _ in self.named_buffers(recurse=True)]
+    #     return dict(param_metadata=param_metadata, buffer_names=buffer_names)
 
-    @staticmethod
-    def consolidate_shard_weights(
-        shard_weights: List[Dict[str, torch.Tensor]],
-        shard_metadata: List[Dict[str, Any]],
-        with_module_buffers: bool = True,
-        strict: bool = True,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Given a list of weights and meta data associated to N shards, reconstruct
-        the weights of an equivalent consolidated (non-sharded) state dict.
+    # @staticmethod
+    # def consolidate_shard_weights(
+    #     shard_weights: List[Dict[str, torch.Tensor]],
+    #     shard_metadata: List[Dict[str, Any]],
+    #     with_module_buffers: bool = True,
+    #     strict: bool = True,
+    # ) -> Dict[str, torch.Tensor]:
+    #     """
+    #     Given a list of weights and meta data associated to N shards, reconstruct
+    #     the weights of an equivalent consolidated (non-sharded) state dict.
 
-        Module parameters are consolidated using the shard metadata.
+    #     Module parameters are consolidated using the shard metadata.
 
-        Module buffers are taken from shard 0: this assumes that module buffers
-        are either synchronized or that the shard 0 value is valid for all shards.
-        If this behavior is not correct for your module (for instance if buffers
-        needs to be all-reduced instead), you can disable it with `with_module_buffers=False`.
+    #     Module buffers are taken from shard 0: this assumes that module buffers
+    #     are either synchronized or that the shard 0 value is valid for all shards.
+    #     If this behavior is not correct for your module (for instance if buffers
+    #     needs to be all-reduced instead), you can disable it with `with_module_buffers=False`.
 
-        This method is used to re-assemble checkpoints of shards without
-        having to instantiate FSDP wrappers with the world size (i.e. large
-        number of GPUs) originally used to save the shards.
+    #     This method is used to re-assemble checkpoints of shards without
+    #     having to instantiate FSDP wrappers with the world size (i.e. large
+    #     number of GPUs) originally used to save the shards.
 
-        Args:
-            shard_weights (List[Dict[str, torch.Tensor]]):
-                List of dictionaries that contains sharded weights from
-                each rank.
-            shard_metadata (List[Dict[str, Any]]):
-                List of dictionaries that contains metadata from each shard.
-                See `local_metadata_dict` above.
-            with_module_buffers (bool):
-                If shard 0's buffer should be returned in the consolidated
-                weight dict.
-                Default: True.
-            strict (bool):
-                allow incomplete shard weights. if True, every key in the metadata must be present in the weights.
+    #     Args:
+    #         shard_weights (List[Dict[str, torch.Tensor]]):
+    #             List of dictionaries that contains sharded weights from
+    #             each rank.
+    #         shard_metadata (List[Dict[str, Any]]):
+    #             List of dictionaries that contains metadata from each shard.
+    #             See `local_metadata_dict` above.
+    #         with_module_buffers (bool):
+    #             If shard 0's buffer should be returned in the consolidated
+    #             weight dict.
+    #             Default: True.
+    #         strict (bool):
+    #             allow incomplete shard weights. if True, every key in the metadata must be present in the weights.
 
-        """
-        if len(shard_weights) != len(shard_metadata) or not len(shard_weights):
-            raise ValueError("Require metadata for each shard and non-empty shards")
+    #     """
+    #     if len(shard_weights) != len(shard_metadata) or not len(shard_weights):
+    #         raise ValueError("Require metadata for each shard and non-empty shards")
 
-        consolidated_weights = {}
-        original_world_size = len(shard_weights)
+    #     consolidated_weights = {}
+    #     original_world_size = len(shard_weights)
 
-        # For every FSDP instance.
-        for fsdp_obj_idx, metadata in enumerate(shard_metadata[0]["param_metadata"]):
-            fsdp_path = metadata["fsdp_path"]
-            params = metadata["params"]
-            # For every this-FSDP-owned param, flattened or not.
-            for backing_param_name, v in params.items():
-                in_state_dict_key = ".".join([fsdp_path, backing_param_name]) if fsdp_path else backing_param_name
-                # Get full param back with pad removed.
-                if in_state_dict_key not in shard_weights[0] and (not strict):
-                    continue
-                shards = []
-                for rank in range(original_world_size):
-                    shard = shard_weights[rank][in_state_dict_key]
-                    pad = shard_metadata[rank]["param_metadata"][fsdp_obj_idx]["params"][backing_param_name]["padding"]
-                    shards.append(_unpad(shard, pad))
-                full_param = torch.cat(shards, dim=0)
-                # (Potentially), split the full param and create original params.
-                names, shapes, numels, _ = v.values()
-                assert sum(numels) == full_param.size(0)
-                for n, t, s in zip(names, full_param.split(numels), shapes):
-                    out_state_dict_key = ".".join([fsdp_path, n]) if fsdp_path else n
-                    consolidated_weights[out_state_dict_key] = t.view(s)
+    #     # For every FSDP instance.
+    #     for fsdp_obj_idx, metadata in enumerate(shard_metadata[0]["param_metadata"]):
+    #         fsdp_path = metadata["fsdp_path"]
+    #         params = metadata["params"]
+    #         # For every this-FSDP-owned param, flattened or not.
+    #         for backing_param_name, v in params.items():
+    #             in_state_dict_key = ".".join([fsdp_path, backing_param_name]) if fsdp_path else backing_param_name
+    #             # Get full param back with pad removed.
+    #             if in_state_dict_key not in shard_weights[0] and (not strict):
+    #                 continue
+    #             shards = []
+    #             for rank in range(original_world_size):
+    #                 shard = shard_weights[rank][in_state_dict_key]
+    #                 pad = shard_metadata[rank]["param_metadata"][fsdp_obj_idx]["params"][backing_param_name]["padding"]
+    #                 shards.append(_unpad(shard, pad))
+    #             full_param = torch.cat(shards, dim=0)
+    #             # (Potentially), split the full param and create original params.
+    #             names, shapes, numels, _ = v.values()
+    #             assert sum(numels) == full_param.size(0)
+    #             for n, t, s in zip(names, full_param.split(numels), shapes):
+    #                 out_state_dict_key = ".".join([fsdp_path, n]) if fsdp_path else n
+    #                 consolidated_weights[out_state_dict_key] = t.view(s)
 
-        # copy shared parameters
-        for src_path, dest_path in metadata["shared_param_info"]:
-            consolidated_weights[dest_path] = consolidated_weights[src_path]
+    #     # copy shared parameters
+    #     for src_path, dest_path in metadata["shared_param_info"]:
+    #         consolidated_weights[dest_path] = consolidated_weights[src_path]
 
-        # Deal with the buffers, which are not parameters and are not sharded by FSDP
-        # and therefore are replicated among the different shards.
-        # We take the values of the first shard (this assumes that there is some form
-        # of synchronization between shards or that all shards buffers are equivalent).
-        if with_module_buffers:
-            for buffer_name in shard_metadata[0]["buffer_names"]:
-                if buffer_name not in shard_weights[0] and (not strict):
-                    continue
-                consolidated_weights[buffer_name] = shard_weights[0][buffer_name]
+    #     # Deal with the buffers, which are not parameters and are not sharded by FSDP
+    #     # and therefore are replicated among the different shards.
+    #     # We take the values of the first shard (this assumes that there is some form
+    #     # of synchronization between shards or that all shards buffers are equivalent).
+    #     if with_module_buffers:
+    #         for buffer_name in shard_metadata[0]["buffer_names"]:
+    #             if buffer_name not in shard_weights[0] and (not strict):
+    #                 continue
+    #             consolidated_weights[buffer_name] = shard_weights[0][buffer_name]
 
-        return consolidated_weights
+    #     return consolidated_weights
 
     @torch.no_grad()
     def _use_fp32_param_shard(self, params: Optional[List[Parameter]] = None) -> None:
@@ -1670,47 +1672,47 @@ class FullyShardedDataParallel(nn.Module):
             )
 
 
-def free_storage_(data: torch.Tensor) -> None:
-    """Free underlying storage of a Tensor."""
-    if data is None:
-        return
-    # XLA tensors do not have explict storage, so we don't need to do anything here
-    assert data.device.type == "xla", f"expected XLA tensors but got device {data.device}"
+# def free_storage_(data: torch.Tensor) -> None:
+#     """Free underlying storage of a Tensor."""
+#     if data is None:
+#         return
+#     # XLA tensors do not have explict storage, so we don't need to do anything here
+#     assert data.device.type == "xla", f"expected XLA tensors but got device {data.device}"
 
 
-def _post_state_dict_hook(
-    module: FullyShardedDataParallel,
-    state_dict: "OrderedDict[str, torch.Tensor]",
-    prefix: str,
-    *args: Any,
-) -> "OrderedDict[str, torch.Tensor]":
-    # Assuming we are in a ``summon_full_params()`` context, we need to clone
-    # each tensor so that it does not get freed (in-place) when the context
-    # exits. At the same time, this hook can be called multiple times
-    # recursively, so we need to make sure that we only clone each tensor at
-    # most once. Thus we add an attribute on the tensor called "_has_been_cloned"
-    # which keeps track of tensors that are no longer at risk of being freed.
-    for key in state_dict.keys():
-        if not key.startswith(prefix) or getattr(state_dict[key], "_has_been_cloned", False):
-            continue
-        if state_dict[key].device.type != module.state_dict_device.type:
-            state_dict[key] = state_dict[key].to(device=module.state_dict_device)
-            state_dict[key]._has_been_cloned = True
-        elif module.training_state == TrainingState.SUMMON_FULL_PARAMS:
-            # We copy the state_dict since full param will be freed after we
-            # exit the ``summon_full_params()`` context.
-            state_dict[key] = state_dict[key].clone()
-            state_dict[key]._has_been_cloned = True
+# def _post_state_dict_hook(
+#     module: FullyShardedDataParallel,
+#     state_dict: "OrderedDict[str, torch.Tensor]",
+#     prefix: str,
+#     *args: Any,
+# ) -> "OrderedDict[str, torch.Tensor]":
+#     # Assuming we are in a ``summon_full_params()`` context, we need to clone
+#     # each tensor so that it does not get freed (in-place) when the context
+#     # exits. At the same time, this hook can be called multiple times
+#     # recursively, so we need to make sure that we only clone each tensor at
+#     # most once. Thus we add an attribute on the tensor called "_has_been_cloned"
+#     # which keeps track of tensors that are no longer at risk of being freed.
+#     for key in state_dict.keys():
+#         if not key.startswith(prefix) or getattr(state_dict[key], "_has_been_cloned", False):
+#             continue
+#         if state_dict[key].device.type != module.state_dict_device.type:
+#             state_dict[key] = state_dict[key].to(device=module.state_dict_device)
+#             state_dict[key]._has_been_cloned = True
+#         elif module.training_state == TrainingState.SUMMON_FULL_PARAMS:
+#             # We copy the state_dict since full param will be freed after we
+#             # exit the ``summon_full_params()`` context.
+#             state_dict[key] = state_dict[key].clone()
+#             state_dict[key]._has_been_cloned = True
 
-    # Remove "_fsdp_wrapped_module." prefix
-    replace_by_prefix_(state_dict, prefix + "_fsdp_wrapped_module.", prefix)
-    return state_dict
+#     # Remove "_fsdp_wrapped_module." prefix
+#     replace_by_prefix_(state_dict, prefix + "_fsdp_wrapped_module.", prefix)
+#     return state_dict
 
 
-def _pre_load_state_dict_hook(
-    state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], prefix: str, *args: Any
-) -> None:
-    replace_by_prefix_(state_dict, prefix, prefix + "_fsdp_wrapped_module.")
+# def _pre_load_state_dict_hook(
+#     state_dict: Union[Dict[str, torch.Tensor], "OrderedDict[str, torch.Tensor]"], prefix: str, *args: Any
+# ) -> None:
+#     replace_by_prefix_(state_dict, prefix, prefix + "_fsdp_wrapped_module.")
 
 
 def _clean_path(path: str) -> str:
