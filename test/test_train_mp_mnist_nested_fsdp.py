@@ -147,10 +147,8 @@ def train_mnist(flags, **kwargs):
   model = FSDP(
     model,
     reshard_after_forward=flags.reshard_after_forward,
-    flatten_parameters=flags.flatten_parameters
+    flatten_parameters=flags.flatten_parameters,
   )
-  xm.mark_step()
-  xm.rendezvous('FSDP model construction done')
 
   writer = None
   if xm.is_master_ordinal():

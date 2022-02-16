@@ -292,15 +292,18 @@ class FullyShardedDataParallel(nn.Module):
         self._has_params = len(params) > 0
         # self._has_shared_params = False  # not supported in XLA FSDP
 
-        # For now, it is either all flatten or none flatten. This will be extended to
-        # multiple flatten groups in my next PR.
-        to_be_flatten_params: List[List[Parameter]] = [[]]
-        non_flatten_params = params
-        param_name_groups = [[n] for n in param_names]
+        # For now, it is either all flatten or none flatten.
         if self.flatten_parameters:
-            to_be_flatten_params = [params]
+            to_be_flatten_params: List[List[Parameter]] = [params]
             non_flatten_params = []
-            param_name_groups = [param_names]
+        else:
+            # In XLA FSDP, we wrap all parameters with FlattenParamsWrapper
+            # even if `flatten_parameters` is False. In this case each param
+            # gets its own flatten group (so the flattening has no practical
+            # effect on the param size or numbers, but allows us to get around
+            # the slicing issue in https://github.com/pytorch/xla/issues/3330)
+            to_be_flatten_params: List[List[Parameter]] = [[p] for p in params]
+            non_flatten_params = []
         del param_names
 
         self._fsdp_wrapped_module: nn.Module = FlattenParamsWrapper(
@@ -349,8 +352,9 @@ class FullyShardedDataParallel(nn.Module):
         # self._return_full_state_dict = True  # not supported in XLA FSDP
         init_end = time.time()
 
-        logging.info(
-            f"FSDP.__init__(done): total_init_time: {(init_end - init_start): .4f}"
+        logging.debug(
+            f"FSDP.__init__(done): total_init_time: {(init_end - init_start): .4f} "
+            f"num_params (sharded): {(sum(p.numel() for p in self.sharded_params))}"
         )
 
         # Flag to guard against preparing gradients multiple times per iteration.
