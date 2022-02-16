@@ -543,6 +543,8 @@ class FullyShardedDataParallel(nn.Module):
         """
         # Here we implement it in a different manner from the fairscale FSDP
         # We delete the original module parameters and create the sharded ones
+        # TODO (ronghanghu) maybe move it to lazy-init to handle the case of
+        # wrapping the model with FSDP first and moving it to XLA device later
         params_to_shard_set = set(params_to_shard)
         assert len(params_to_shard_set) == len(params_to_shard), \
             "params_to_shard should not have dups"
@@ -551,11 +553,9 @@ class FullyShardedDataParallel(nn.Module):
         shared_full_param_infos = []
         full_params = []
         for module_name, m in self.named_modules():
-            for n, p_original in m.named_parameters(recurse=False):
-                p = p_original.detach()
-                p.requires_grad = p_original.requires_grad
+            for n, p in m.named_parameters(recurse=False):
                 assert p.dtype == torch.float32, "only fp32 parameters are supported"
-                if p_original in params_to_shard_set:
+                if p in params_to_shard_set:
                     if p in shared_full_param_memo:
                         mname, shared_m, shared_n = shared_full_param_memo[p]
                         shared_full_param_infos.append((module_name, mname, m, n, shared_m, shared_n))
@@ -571,29 +571,25 @@ class FullyShardedDataParallel(nn.Module):
         self.full_param_infos = full_param_infos
         self.shared_full_param_infos = shared_full_param_infos
 
-        # deregister the names as parameters (replace them with the detached version
-        # so that they won't appear in `parameters()` of the modules)
+        # deregister the full parameters (so that they won't appear in
+        # `parameters()` of the modules)
         for p, (_, m, n) in zip(self.full_params, self.full_param_infos):
-            delattr(m, n)
-            assert not isinstance(p, torch.nn.Parameter)
-            setattr(m, n, p)  # This will set as plain attr
+            assert n in m._parameters
+            m._parameters.pop(n)
         for (_, _, m, n, shared_m, shared_n) in self.shared_full_param_infos:
-            delattr(m, n)
-            shared_param = getattr(shared_m, shared_n)
-            assert not isinstance(shared_param, torch.nn.Parameter)
-            setattr(m, n, shared_param)
+            assert n in m._parameters
+            m._parameters.pop(n)
 
+        # allocate and register new sharded parameters
         self.numel_padded_per_param = []
         self.sharded_params = []
         for p, (module_name, _, n) in zip(self.full_params, self.full_param_infos):
             assert not hasattr(p, "_is_sharded")
-            assert p.dtype == torch.float32
 
             shard_data, num_padded = self._get_shard(p.data)
             p_shard = nn.Parameter(shard_data, requires_grad=p.requires_grad)
             p_shard._orig_size = p.data.size()
             p_shard._is_sharded = True
-            p_shard._full_param = p  # add a handle to the full parameter
             p_shard_name = f"fp32shard.{module_name}.{n}".replace(".", "__")
             self.register_parameter(p_shard_name, p_shard)
             self.numel_padded_per_param.append(num_padded)
@@ -1285,7 +1281,7 @@ class FullyShardedDataParallel(nn.Module):
             # Average grad by world_size for consistency with PyTorch DDP.
             param.grad.data.div_(self.gradient_predivide_factor)
 
-        assert param._is_sharded
+        assert hasattr(param, "_has_full_param")
         # Save the unsharded grad for reduction. We will asynchronously accumulate the reduced gradient into
         # param._saved_grad_shard. If this FSDP module was called multiple times it's possible that multiple
         # gradient reductions will happen in an undefined order. But addition commutes, so this order doesn't
@@ -1346,7 +1342,7 @@ class FullyShardedDataParallel(nn.Module):
 
         def _finalize_parameters(fsdp_module: FullyShardedDataParallel) -> None:
             """Helper used below on all fsdp modules."""
-            for p, p_shard in zip(self.full_params, self.sharded_params):
+            for p, p_shard in zip(fsdp_module.full_params, fsdp_module.sharded_params):
                 if not p.requires_grad:
                     continue
                 if hasattr(p, "_shard_bwd_hook"):
