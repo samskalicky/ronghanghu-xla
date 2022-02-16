@@ -1122,7 +1122,7 @@ class FullyShardedDataParallel(nn.Module):
             if self.reshard_after_forward:
                 self._rebuild_full_params()
             # else:
-            #     self._use_full_params()
+            #     self._use_full_params()  # not needed in XLA FSDP
 
             # Only run the ``self._prep_grads_for_backward`` once per iteration (i.e. in case
             # it is multiple outputs or multiple forward passes).
@@ -1364,7 +1364,11 @@ class FullyShardedDataParallel(nn.Module):
                 # Parameter and gradient devices must match.
                 if hasattr(p_shard, "_saved_grad_shard"):
                     assert p_shard.device == p_shard._saved_grad_shard.device
-                    p_shard.grad = p_shard._saved_grad_shard
+                    if p_shard.grad is not None:
+                        assert p_shard.grad.size() == p_shard._saved_grad_shard.size()
+                        p_shard.grad += p_shard._saved_grad_shard
+                    else:
+                        p_shard.grad = p_shard._saved_grad_shard
                     delattr(p_shard, "_saved_grad_shard")
 
         # Update root and nested FSDP's hooks and flags.
@@ -1377,7 +1381,7 @@ class FullyShardedDataParallel(nn.Module):
                     # the `requires_grad` field set. If `requires_grad=False` for
                     # all the params, the post_backward hook will not fire and the
                     # state will remain in `TrainingState.BACKWARD_PRE`.
-                    if any([p.requires_grad for p in m.params]):
+                    if any([p.requires_grad for p in m.full_params]):
                         m.assert_state(TrainingState.BACKWARD_POST)
                     else:
                         m.assert_state(TrainingState.BACKWARD_PRE)
@@ -1438,20 +1442,17 @@ class FullyShardedDataParallel(nn.Module):
         """Make sure p.grad is correctly prepared for the backward with
         right shape, device, accumulated values, etc.
         """
-        for p in self.params:
+        for p in self.full_params:
             if p.grad is not None:
-                if p.grad.device != p.data.device:
-                    p.grad = None
-                elif p.grad.size() == p._orig_size:
+                assert p.grad.device == p.data.device
+                if p.grad.size() == p._orig_size:
                     # This is gradient accumulation with no_sync context.
                     pass
-                elif p.grad.size() == p._fp32_shard.shape:
+                elif p.grad.size() == p._sharded_param.shape:
                     # This is gradient accumulation without no_sync context.
-                    # We save the grad shard and set p.grad to None for this backward pass.
-                    # We will accumulate after this pass's grad is generated and reduced and
-                    # sharded.
-                    p._saved_grad_shard = p.grad.data
-                    p.grad = None
+                    # this case shouldn't happen in XLA FSDP as we will accumulate gradients
+                    # in separate sharded parameters.
+                    raise Exception("This shouldn't happen in XLA FSDP")
                 else:
                     raise AssertionError(f"unexpected grad shape: {p.grad.size()}")
 
