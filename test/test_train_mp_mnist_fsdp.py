@@ -125,7 +125,7 @@ def train_mnist(flags, **kwargs):
   model = FSDP(
     model,
     reshard_after_forward=flags.reshard_after_forward,
-    flatten_parameters=flags.flatten_parameters
+    flatten_parameters=flags.flatten_parameters,
   )
   xm.mark_step()
   xm.rendezvous('FSDP model construction done')
@@ -144,7 +144,8 @@ def train_mnist(flags, **kwargs):
       output = model(data)
       loss = loss_fn(output, target)
       loss.backward()
-      xm.optimizer_step(optimizer)
+      # do not reduce the gradients (since we are using sharded params)
+      optimizer.step()
       tracker.add(flags.batch_size)
       if step % flags.log_steps == 0:
         xm.add_step_closure(
