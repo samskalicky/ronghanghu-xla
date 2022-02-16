@@ -817,38 +817,38 @@ class FullyShardedDataParallel(nn.Module):
     #         output = self._load_state_dict(state_dict, strict)
     #     return output
 
-    # @contextlib.contextmanager
-    # def no_sync(self) -> Generator:
-    #     """
-    #     A context manager to disable gradient synchronizations across FSDP
-    #     processes. Within this context, gradients will be accumulated on module
-    #     variables, which will later be synchronized in the first
-    #     forward-backward pass after exiting the context.
+    @contextlib.contextmanager
+    def no_sync(self) -> Generator:
+        """
+        A context manager to disable gradient synchronizations across FSDP
+        processes. Within this context, gradients will be accumulated on module
+        variables, which will later be synchronized in the first
+        forward-backward pass after exiting the context.
 
-    #     .. note:: This likely results in higher memory usage because FSDP will
-    #         accumulate the full model gradients (instead of gradient shards)
-    #         until the eventual sync.
+        .. note:: This likely results in higher memory usage because FSDP will
+            accumulate the full model gradients (instead of gradient shards)
+            until the eventual sync.
 
-    #     .. note:: Gradient accumulation can be done without this context,
-    #         avoiding the extra GPU memory overhead, but with the extra
-    #         networking overhead.
-    #     """
-    #     self._lazy_init()
-    #     assert self._is_root, "no_sync on inner FSDP is not supported"
-    #     self.assert_state(TrainingState.IDLE)
-    #     # This instance may wrap other FSDP instances and we
-    #     # need to set all of them to accumulate gradients.
-    #     old_flags = []
-    #     for m in self.modules():  # includes self
-    #         if isinstance(m, FullyShardedDataParallel):
-    #             old_flags.append((m, m._require_backward_grad_sync))
-    #             m._require_backward_grad_sync = False
-    #     try:
-    #         yield
-    #     finally:
-    #         for m, old_flag in old_flags:
-    #             assert m._require_backward_grad_sync is False
-    #             m._require_backward_grad_sync = old_flag
+        .. note:: Gradient accumulation can be done without this context,
+            avoiding the extra GPU memory overhead, but with the extra
+            networking overhead.
+        """
+        self._lazy_init()
+        assert self._is_root, "no_sync on inner FSDP is not supported"
+        self.assert_state(TrainingState.IDLE)
+        # This instance may wrap other FSDP instances and we
+        # need to set all of them to accumulate gradients.
+        old_flags = []
+        for m in self.modules():  # includes self
+            if isinstance(m, FullyShardedDataParallel):
+                old_flags.append((m, m._require_backward_grad_sync))
+                m._require_backward_grad_sync = False
+        try:
+            yield
+        finally:
+            for m, old_flag in old_flags:
+                assert m._require_backward_grad_sync is False
+                m._require_backward_grad_sync = old_flag
 
     # @contextlib.contextmanager
     # def summon_full_params(self, recurse: bool = True, volatile: bool = False) -> Generator:
@@ -1213,7 +1213,7 @@ class FullyShardedDataParallel(nn.Module):
         """
         if not torch.is_grad_enabled():
             return  # don't register grad hooks if grad isn't enabled
-        for p in self.params:
+        for p in self.full_params:
             if p.requires_grad:
                 if hasattr(p, "_shard_bwd_hook"):
                     continue
@@ -1253,15 +1253,15 @@ class FullyShardedDataParallel(nn.Module):
         if param.grad is None:
             return
 
-        if hasattr(param, "_linked_param"):
-            # This links to a shared param. We should finalize the linked param here.
-            assert param.shape == (1,), param.shape
-            # If the _is_shared flag is set, then this shared weight is indeed being
-            # shared between different FSDP wrappers. Otherwise, they are linked but
-            # likely in the same FSDP wrapper, which means we shouldn't finalize the
-            # linked param..
-            if hasattr(param._linked_param, "_is_shared") and param._linked_param._is_shared:
-                param = param._linked_param
+        # if hasattr(param, "_linked_param"):  # not supported in XLA FSDP
+        #     # This links to a shared param. We should finalize the linked param here.
+        #     assert param.shape == (1,), param.shape
+        #     # If the _is_shared flag is set, then this shared weight is indeed being
+        #     # shared between different FSDP wrappers. Otherwise, they are linked but
+        #     # likely in the same FSDP wrapper, which means we shouldn't finalize the
+        #     # linked param..
+        #     if hasattr(param._linked_param, "_is_shared") and param._linked_param._is_shared:
+        #         param = param._linked_param
 
         assert param.grad is not None, param.shape
         if param.grad.requires_grad:
@@ -1285,33 +1285,19 @@ class FullyShardedDataParallel(nn.Module):
             # Average grad by world_size for consistency with PyTorch DDP.
             param.grad.data.div_(self.gradient_predivide_factor)
 
-        if param._is_sharded:
-            # Save the unsharded grad for reduction. We will asynchronously accumulate the reduced gradient into
-            # param._saved_grad_shard. If this FSDP module was called multiple times it's possible that multiple
-            # gradient reductions will happen in an undefined order. But addition commutes, so this order doesn't
-            # matter, neglecting rounding.
-            grad = param.grad.data
-            # Clear grad on the tensor, so any repeated gradient computations do not interfere with this reduction.
-            #
-            # The effect on memory consumption is not usually significant. No extra memory is allocated if this
-            # module is called only once, reduction happens quickly, or the tensor is bucketed. If the module is
-            # called multiple times, and the backwards pass runs far enough ahead of the `post_backward` stream,
-            # then we can end up with multiple unsharded gradients allocated and queued for reduction.
-            #
-            # We could guard against this by using CUDA events (see record_event, wait_event in torch.cuda.Stream).
-            # This ensures the `default` stream will wait for the `post_backward` stream to complete the last
-            # reduction for this module, before scheduling additional reduction work. Then at most there are two
-            # unsharded gradients allocated; one for a pending reduction, and one for gradient computation.
-            param.grad = None
-            grad_flat = _flatten_and_pad_to_chunks(grad, self.world_size)
-            xm.reduce_scatter(xm.REDUCE_SUM, grad_flat, 1.0, scatter_dim=0, shard_count=self.world_size)
-            self._post_reduction_hook(param, grad_flat)
-        else:
-            # Currently the only way for _is_sharded to be False is if
-            # world_size == 1. This could be relaxed in the future, in which
-            # case grads should be all-reduced here.
-            assert self.world_size == 1
-            self._post_reduction_hook(param, param.grad.data)
+        assert param._is_sharded
+        # Save the unsharded grad for reduction. We will asynchronously accumulate the reduced gradient into
+        # param._saved_grad_shard. If this FSDP module was called multiple times it's possible that multiple
+        # gradient reductions will happen in an undefined order. But addition commutes, so this order doesn't
+        # matter, neglecting rounding.
+        grad = param.grad.data
+        # Clear grad on the tensor, so any repeated gradient computations do not interfere with this reduction.
+        param.grad = None
+        grad_flat = _flatten_and_pad_to_chunks(grad, self.world_size)
+        grad_reduce_scattered = xm.reduce_scatter(
+            xm.REDUCE_SUM, grad_flat, scale=1.0, scatter_dim=0, shard_count=self.world_size
+        )
+        self._post_reduction_hook(param, grad_reduce_scattered)
 
     def _post_reduction_hook(self, param: Parameter, reduced_grad: torch.Tensor) -> None:
         """Hook to call on each param after the reduce-scatter."""
@@ -1320,15 +1306,16 @@ class FullyShardedDataParallel(nn.Module):
             # Average grad by world_size for consistency with PyTorch DDP.
             reduced_grad.data.div_(self.gradient_postdivide_factor)
 
-        if param._is_sharded:
-            # Accumulate into the gradient shard.
-            if getattr(param, "_saved_grad_shard", None) is None:
-                param._saved_grad_shard = reduced_grad.data
-            else:
-                assert (
-                    param._saved_grad_shard.shape == reduced_grad.shape
-                ), f"{param._saved_grad_shard.shape} vs {reduced_grad.shape}"
-                param._saved_grad_shard.data += reduced_grad.data
+        assert hasattr(param, "_sharded_param")
+        p_shard = param._sharded_param
+        # Accumulate into the gradient shard.
+        if getattr(p_shard, "_saved_grad_shard", None) is None:
+            p_shard._saved_grad_shard = reduced_grad.data
+        else:
+            assert (
+                p_shard._saved_grad_shard.shape == reduced_grad.shape
+            ), f"{param._saved_grad_shard.shape} vs {reduced_grad.shape}"
+            p_shard._saved_grad_shard.data += reduced_grad.data
 
     def _queue_wait_for_post_backward(self) -> None:
         """Try to queue a `wait_for_post_backward` callback.
@@ -1350,7 +1337,7 @@ class FullyShardedDataParallel(nn.Module):
         # the `requires_grad` field set. If `requires_grad=False` for
         # all the params, the post_backward hook will not fire and the
         # state will remain in `TrainingState.BACKWARD_PRE`.
-        if any([p.requires_grad for p in self.params]):
+        if any([p.requires_grad for p in self.full_params]):
             self.assert_state(TrainingState.BACKWARD_POST)
         else:
             self.assert_state(TrainingState.BACKWARD_PRE)
@@ -1359,7 +1346,7 @@ class FullyShardedDataParallel(nn.Module):
 
         def _finalize_parameters(fsdp_module: FullyShardedDataParallel) -> None:
             """Helper used below on all fsdp modules."""
-            for p in fsdp_module.params:
+            for p, p_shard in zip(self.full_params, self.sharded_params):
                 if not p.requires_grad:
                     continue
                 if hasattr(p, "_shard_bwd_hook"):
@@ -1375,10 +1362,10 @@ class FullyShardedDataParallel(nn.Module):
                     continue
 
                 # Parameter and gradient devices must match.
-                if hasattr(p, "_saved_grad_shard"):
-                    assert p.device == p._saved_grad_shard.device
-                    p.grad = p._saved_grad_shard
-                    delattr(p, "_saved_grad_shard")
+                if hasattr(p_shard, "_saved_grad_shard"):
+                    assert p_shard.device == p_shard._saved_grad_shard.device
+                    p_shard.grad = p_shard._saved_grad_shard
+                    delattr(p_shard, "_saved_grad_shard")
 
         # Update root and nested FSDP's hooks and flags.
         for m in self.modules():  # includes self
