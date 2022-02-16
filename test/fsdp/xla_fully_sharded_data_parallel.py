@@ -553,6 +553,7 @@ class FullyShardedDataParallel(nn.Module):
         for module_name, m in self.named_modules():
             for n, p_original in m.named_parameters(recurse=False):
                 p = p_original.detach()
+                p.requires_grad = p_original.requires_grad
                 assert p.dtype == torch.float32, "only fp32 parameters are supported"
                 if p_original in params_to_shard_set:
                     if p in shared_full_param_memo:
@@ -589,13 +590,15 @@ class FullyShardedDataParallel(nn.Module):
             assert p.dtype == torch.float32
 
             shard_data, num_padded = self._get_shard(p.data)
-            p_shard = nn.Parameter(shard_data)
+            p_shard = nn.Parameter(shard_data, requires_grad=p.requires_grad)
             p_shard._orig_size = p.data.size()
             p_shard._is_sharded = True
+            p_shard._full_param = p  # add a handle to the full parameter
             p_shard_name = f"fp32shard.{module_name}.{n}".replace(".", "__")
             self.register_parameter(p_shard_name, p_shard)
             self.numel_padded_per_param.append(num_padded)
             self.sharded_params.append(p_shard)
+            p._sharded_param = p_shard  # add a handle to the sharded parameter
             # free the original full parameter
             p.data = p.data.new_zeros(1)
             p._has_full_param = False
