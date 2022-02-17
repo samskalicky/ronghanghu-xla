@@ -27,7 +27,6 @@ from typing import (
 
 import torch
 from torch.autograd import Variable
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
@@ -70,11 +69,8 @@ class FullyShardedDataParallel(nn.Module):
 
     Pseudo-code usage::
 
-        import torch
-        from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
-
-        torch.cuda.set_device(device_id)
-        sharded_module = FSDP(my_module)
+        my_module = my_module.to(xm.xla_device())
+        sharded_module = FullyShardedDataParallel(my_module)
         optim = torch.optim.Adam(sharded_module.parameters(), lr=0.0001)
         x = sharded_module(x, y=3, z=torch.Tensor([1]))
         loss = x.sum()
@@ -83,51 +79,20 @@ class FullyShardedDataParallel(nn.Module):
 
     It is also possible to shard individual layers separately and have an outer
     wrapper handle any leftover parameters. This can be helpful to further
-    reduce GPU memory usage, reduce system memory usage when initializing large
+    reduce TPU memory usage, reduce system memory usage when initializing large
     models and to improve training speed by overlapping the all-gather step
-    across the forward pass. For example::
+    across the forward pass.
 
-        import torch
-        from fairscale.nn.wrap import wrap, enable_wrap, auto_wrap
-        from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
-        from fairscale.utils.testing import dist_init, teardown, rmf
+    .. warning::
 
-        result = dist_init(0, 1, "/tmp/t1", "/tmp/t2")
-        assert result
-        fsdp_params = dict(wrapper_cls=FSDP, mixed_precision=True, flatten_parameters=True)
-        with enable_wrap(**fsdp_params):
-            l1 = wrap(torch.nn.Linear(5, 5))
-            assert isinstance(l1, FSDP)
-            # Wraps layer in FSDP by default if within context
-            # Separately Wraps children modules with more than 1e8 params
-            large_tfmr = torch.nn.Transformer(d_model=2048, num_encoder_layers=12,
-                                              num_decoder_layers=12)
-            l2 = auto_wrap(large_tfmr)
-            assert isinstance(l2.encoder, FSDP)
-            assert isinstance(l2.decoder, FSDP)
-            print(l2)  # You can print the model to examine FSDP wrapping.
-        teardown()
-        rmf("/tmp/t1")
-        rmf("/tmp/t2")
+        The module should be moved to TPU device *before* wrapping it with
+        FSDP.
 
     .. warning::
 
         The optimizer must be initialized *after* the module has been wrapped,
         since FSDP will shard parameters in-place and this will break any
         previously initialized optimizers.
-
-    .. warning::
-
-        If you wrap every parameter inside a nested FSDP and leaving the outer
-        FSDP empty without any parameter, checkpointing activation may trigger
-        an assert on the backward pass. The solution is to leave some parameters
-        to the outer FSDP.
-
-    .. warning::
-
-        If activation checkpointing is used with FSDP, it is strongly encouraged
-        to use ``checkpoint_wrapper`` function from FairScale instead of the
-        ``checkpoint`` function from PyTorch.
 
     Args:
         module (nn.Module):
@@ -502,7 +467,7 @@ class FullyShardedDataParallel(nn.Module):
             until the eventual sync.
 
         .. note:: Gradient accumulation can be done without this context,
-            avoiding the extra GPU memory overhead, but with the extra
+            avoiding the extra TPU memory overhead, but with the extra
             networking overhead.
         """
         self._lazy_init()
@@ -755,18 +720,18 @@ class FullyShardedDataParallel(nn.Module):
         At the start of :func:`_post_backward_hook`, ``param.grad`` contains the
         full gradient for the local batch. The reduce-scatter op will replace
         ``param.grad`` with a single shard of the summed gradient across all
-        GPUs. This shard will align with the current GPU rank. For example::
+        TPUs. This shard will align with the current TPU rank. For example::
 
             before reduce_scatter:
-                param.grad (GPU #0): [1, 2, 3, 4]
-                param.grad (GPU #1): [5, 6, 7, 8]
+                param.grad (TPU #0): [1, 2, 3, 4]
+                param.grad (TPU #1): [5, 6, 7, 8]
 
             after reduce_scatter:
-                param.grad (GPU #0): [6, 8]    # 1+5, 2+6
-                param.grad (GPU #1): [10, 12]  # 3+7, 4+8
+                param.grad (TPU #0): [6, 8]    # 1+5, 2+6
+                param.grad (TPU #1): [10, 12]  # 3+7, 4+8
 
-        The local GPU's ``optim.step`` is responsible for updating a single
-        shard of params, also corresponding to the current GPU's rank. This
+        The local TPU's ``optim.step`` is responsible for updating a single
+        shard of params, also corresponding to the current TPU's rank. This
         alignment is created by :func:`_shard_parameters_`, which ensures that
         the local optimizer only sees the relevant parameter shard.
         """
@@ -786,7 +751,7 @@ class FullyShardedDataParallel(nn.Module):
             # when in a ``no_sync`` context (as inversely indicated by
             # ``self._require_backward_grad_sync``), since the params will not
             # get updated before the next forward. This saves networking
-            # bandwidth but uses more GPU memory.
+            # bandwidth but uses more TPU memory.
             self._free_full_params([param])
 
         # Switch to FP32 shard after backward.
