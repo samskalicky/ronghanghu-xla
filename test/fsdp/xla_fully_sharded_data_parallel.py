@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import contextlib
-import copy
 from enum import Enum, auto
 import functools
 import logging
@@ -322,7 +321,10 @@ class FullyShardedDataParallel(nn.Module):
         full_params = []
         for module_name, m in self.named_modules():
             for n, p in m.named_parameters(recurse=False):
-                assert p.dtype == torch.float32, "only fp32 parameters are supported"
+                if "xla" not in str(p.device):
+                    raise Exception("please moved the module to XLA device before wrapping with FSDP")
+                if p.dtype != torch.float32:
+                    raise Exception("only fp32 parameters are supported")
                 if p in params_to_shard_set:
                     if p in shared_full_param_memo:
                         mname, shared_m, shared_n = shared_full_param_memo[p]
@@ -332,8 +334,7 @@ class FullyShardedDataParallel(nn.Module):
                         full_param_infos.append((module_name, m, n))
                         full_params.append(p)
         assert len(full_params) == len(params_to_shard_set), \
-            f"there are parameters in params_to_shard not belonging to this module: " \
-            f"{len(full_params)} vs {len(params_to_shard_set)}"
+            f"there are parameters in params_to_shard not belonging to this module."
         del shared_full_param_memo
         self.full_params = full_params
         self.full_param_infos = full_param_infos
