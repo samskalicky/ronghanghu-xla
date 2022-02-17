@@ -304,8 +304,6 @@ class FullyShardedDataParallel(nn.Module):
         .. warning:: This needs to be called on all ranks, since synchronization
             primitives will be used.
         """
-        # TODO (ronghanghu) test gradient clipping
-        self._lazy_init()
         assert self._is_root, "clip_grad_norm should only be called on the root (parent) instance"
         self.assert_state(TrainingState.IDLE)
 
@@ -313,23 +311,17 @@ class FullyShardedDataParallel(nn.Module):
         norm_type = float(norm_type)
         params_with_grad = self.params_with_grad
         # Computes the max norm for this shard's gradients and sync's across workers
-        raise NotImplementedError("TODO (ronghanghu) change the API calls below to PyTorch XLA ones")
-        local_norm = calc_grad_norm(params_with_grad, norm_type)
+        local_norm = _calc_grad_norm(params_with_grad, norm_type)
         if norm_type == inf:
-            total_norm = local_norm
-            dist.all_reduce(total_norm, op=torch.distributed.ReduceOp.MAX, group=self.process_group)
+            total_norm = xm.all_reduce(xm.REDUCE_MAX, local_norm)
         else:
-            total_norm = local_norm ** norm_type
-            dist.all_reduce(total_norm, group=self.process_group)
+            total_norm = xm.all_reduce(xm.REDUCE_SUM, local_norm ** norm_type)
             total_norm = total_norm ** (1.0 / norm_type)
 
         # Now multiply each grad by (max_norm/total_norm), same as torch 1.7 https://tinyurl.com/3wtxhhqq)
-        clip_coef = torch.tensor(max_norm, dtype=total_norm.dtype, device=total_norm.device) / (total_norm + 1e-6)
-        if clip_coef < 1:
-            # multiply by clip_coef
-            for p in params_with_grad:
-                assert p.grad is not None
-                p.grad.detach().mul_(clip_coef.to(p.grad.device))
+        clip_coef = torch.clip(max_norm / (total_norm + 1e-6), 0.0, 1.0)
+        for p in params_with_grad:
+            p.grad.detach().mul_(clip_coef.to(p.grad.device))
 
         return total_norm
 
@@ -1000,3 +992,20 @@ def apply_to_tensors(fn: Callable, container: Union[torch.Tensor, Dict, List, Tu
             return x
 
     return _apply(container)
+
+
+def _calc_grad_norm(parameters: List[torch.nn.Parameter], p: float) -> torch.Tensor:
+    r"""Calculate gradient norm of an iterable of parameters.
+    Returns:
+        Total norm of the parameters (viewed as a single vector).
+    """
+    if len(parameters) == 0:
+        return torch.tensor(0.0)
+
+    if p == inf:
+        local_norm = max(par.grad.detach().abs().max() for par in parameters)
+    else:
+        local_norm = torch.norm(
+            torch.stack([torch.norm(par.grad.detach(), p) for par in parameters]), p
+        )
+    return local_norm
