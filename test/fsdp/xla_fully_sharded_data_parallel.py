@@ -1121,17 +1121,18 @@ class FullyShardedDataParallel(nn.Module):
             # overhead.
             if self.reshard_after_forward:
                 self._rebuild_full_params()
-            # else:
-            #     self._use_full_params()  # not needed in XLA FSDP
 
-            # Only run the ``self._prep_grads_for_backward`` once per iteration (i.e. in case
+            # Only run the following once per iteration (i.e. in case
             # it is multiple outputs or multiple forward passes).
             if not self._pre_backward_hook_has_run:
                 self._pre_backward_hook_has_run = True
                 # Start of a backward pass for the first time in an iteration.
                 self.assert_state([TrainingState.IDLE, TrainingState.BACKWARD_PRE])
                 # Prepare p.grad so that it is in the right shape, device, accumulated values, etc.
-                self._prep_grads_for_backward()
+                for p in self.full_params:
+                    if p.grad is not None:
+                        assert p.grad.device == p.data.device, f"{p.grad.device} vs {p.data.device}"
+                        assert p.grad.size() == p._orig_size, f"{p.grad.size()} vs {p._orig_size}"
 
             # Transition to BACKWARD_PRE state if currently IDLE. We can transition from BACKWARD_POST
             # to IDLE when FSDP is within activation checkpointing and called multiple times, due to the
@@ -1287,7 +1288,7 @@ class FullyShardedDataParallel(nn.Module):
 
         assert hasattr(param, "_has_full_param")
         # Save the unsharded grad for reduction. We will asynchronously accumulate the reduced gradient into
-        # param._saved_grad_shard. If this FSDP module was called multiple times it's possible that multiple
+        # sharded param's .grad. If this FSDP module was called multiple times it's possible that multiple
         # gradient reductions will happen in an undefined order. But addition commutes, so this order doesn't
         # matter, neglecting rounding.
         grad = param.grad.data
@@ -1309,13 +1310,12 @@ class FullyShardedDataParallel(nn.Module):
         assert hasattr(param, "_sharded_param")
         p_shard = param._sharded_param
         # Accumulate into the gradient shard.
-        if getattr(p_shard, "_saved_grad_shard", None) is None:
-            p_shard._saved_grad_shard = reduced_grad.data
+        if p_shard.grad is None:
+            p_shard.grad = reduced_grad.data
         else:
-            assert (
-                p_shard._saved_grad_shard.shape == reduced_grad.shape
-            ), f"{param._saved_grad_shard.shape} vs {reduced_grad.shape}"
-            p_shard._saved_grad_shard.data += reduced_grad.data
+            assert p_shard.grad.shape == reduced_grad.shape
+            assert p_shard.grad.device == reduced_grad.device
+            p_shard.grad.data += reduced_grad.data
 
     def _queue_wait_for_post_backward(self) -> None:
         """Try to queue a `wait_for_post_backward` callback.
@@ -1343,33 +1343,15 @@ class FullyShardedDataParallel(nn.Module):
             self.assert_state(TrainingState.BACKWARD_PRE)
 
         # A backward pass is done, clean up below.
-
         def _finalize_parameters(fsdp_module: FullyShardedDataParallel) -> None:
             """Helper used below on all fsdp modules."""
-            for p, p_shard in zip(fsdp_module.full_params, fsdp_module.sharded_params):
+            for p in fsdp_module.full_params:
                 if not p.requires_grad:
                     continue
                 if hasattr(p, "_shard_bwd_hook"):
                     assert len(p._shard_bwd_hook) == 2, len(p._shard_bwd_hook)
                     p._shard_bwd_hook[1].remove()
                     delattr(p, "_shard_bwd_hook")
-
-                # Leave the gradient accumulation state as-is if not synchronizing this pass. This ensures p.grad
-                # remains the unsharded gradient accumulated from prior no-sync passes, and p._saved_grad_shard
-                # remains the sharded gradient from the last synchronized pass. This also allows interleaved no-sync and
-                # sync passes, if desired.
-                if not self._require_backward_grad_sync:
-                    continue
-
-                # Parameter and gradient devices must match.
-                if hasattr(p_shard, "_saved_grad_shard"):
-                    assert p_shard.device == p_shard._saved_grad_shard.device
-                    if p_shard.grad is not None:
-                        assert p_shard.grad.size() == p_shard._saved_grad_shard.size()
-                        p_shard.grad += p_shard._saved_grad_shard
-                    else:
-                        p_shard.grad = p_shard._saved_grad_shard
-                    delattr(p_shard, "_saved_grad_shard")
 
         # Update root and nested FSDP's hooks and flags.
         for m in self.modules():  # includes self
@@ -1436,25 +1418,6 @@ class FullyShardedDataParallel(nn.Module):
     #             pass
     #         else:
     #             p.data = p._full_param_padded[: p._orig_size.numel()].view(p._orig_size)
-
-    @torch.no_grad()
-    def _prep_grads_for_backward(self) -> None:
-        """Make sure p.grad is correctly prepared for the backward with
-        right shape, device, accumulated values, etc.
-        """
-        for p in self.full_params:
-            if p.grad is not None:
-                assert p.grad.device == p.data.device
-                if p.grad.size() == p._orig_size:
-                    # This is gradient accumulation with no_sync context.
-                    pass
-                elif p.grad.size() == p._sharded_param.shape:
-                    # This is gradient accumulation without no_sync context.
-                    # this case shouldn't happen in XLA FSDP as we will accumulate gradients
-                    # in separate sharded parameters.
-                    raise Exception("This shouldn't happen in XLA FSDP")
-                else:
-                    raise AssertionError(f"unexpected grad shape: {p.grad.size()}")
 
     @torch.no_grad()
     def _free_full_params(self, params: Optional[List[Parameter]] = None) -> None:
