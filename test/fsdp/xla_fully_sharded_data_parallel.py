@@ -4,6 +4,7 @@
 import contextlib
 from enum import Enum, auto
 import functools
+import gc
 import logging
 from math import inf
 import time
@@ -122,6 +123,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         module: nn.Module,
         reshard_after_forward: bool = True,
         flatten_parameters: bool = True,
+        execute_sharding_on_init: bool = True,
     ):
         init_start = time.time()
         super().__init__()
@@ -201,16 +203,21 @@ class XlaFullyShardedDataParallel(nn.Module):
         # Flag to indicate if the full params are gathered.
         self.has_full_params: bool = False
 
+        # Flag to guard against preparing gradients multiple times per iteration.
+        # This is reset at the end of the backward pass.
+        self._pre_backward_hook_has_run = False
+
+        if execute_sharding_on_init:
+            # Execute the parameter sharding immediately and free memory
+            xm.mark_step()
+            gc.collect()
+
         init_end = time.time()
 
         logging.debug(
             f"FSDP.__init__(done): total_init_time: {(init_end - init_start): .4f} "
             f"num_params (sharded): {(sum(p.numel() for p in self.sharded_params))}"
         )
-
-        # Flag to guard against preparing gradients multiple times per iteration.
-        # This is reset at the end of the backward pass.
-        self._pre_backward_hook_has_run = False
 
     def _get_gradient_predivide_factor(self, world_size: int) -> float:
         factor: int = 1
@@ -322,8 +329,6 @@ class XlaFullyShardedDataParallel(nn.Module):
         """
         # Here we implement it in a different manner from the fairscale FSDP
         # We delete the original module parameters and create the sharded ones
-        # TODO (ronghanghu) maybe move it to lazy-init to handle the case of
-        # wrapping the model with FSDP first and moving it to XLA device later
         params_to_shard_set = set(params_to_shard)
         assert len(params_to_shard_set) == len(params_to_shard), \
             "params_to_shard should not have dups"
@@ -738,14 +743,9 @@ class XlaFullyShardedDataParallel(nn.Module):
         # Clear grad on the tensor, so any repeated gradient computations do not interfere with this reduction.
         param.grad = None
         grad_flat = _flatten_and_pad_to_chunks(grad, self.world_size)
-        grad_reduce_scattered = xm.reduce_scatter(
+        reduced_grad = xm.reduce_scatter(
             xm.REDUCE_SUM, grad_flat, scale=1.0, scatter_dim=0, shard_count=self.world_size
         )
-        self._post_reduction_hook(param, grad_reduce_scattered)
-
-    def _post_reduction_hook(self, param: Parameter, reduced_grad: torch.Tensor) -> None:
-        """Hook to call on each param after the reduce-scatter."""
-        self.assert_state(TrainingState.BACKWARD_POST)
         if self.gradient_postdivide_factor > 1:
             # Average grad by world_size for consistency with PyTorch DDP.
             reduced_grad.data.div_(self.gradient_postdivide_factor)
