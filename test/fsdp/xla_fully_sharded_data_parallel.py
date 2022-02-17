@@ -1,7 +1,5 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-#
-# This source code is licensed under the BSD license found in the
-# LICENSE file in the root directory of this source tree.
+# This file is largely inspired by `fairscale.nn.FullyShardedDataParallel` in
+# https://fairscale.readthedocs.io/en/stable/api/nn/fsdp.html
 
 import contextlib
 from enum import Enum, auto
