@@ -3,7 +3,6 @@
 
 from contextlib import contextmanager
 from itertools import chain
-import tempfile
 import typing
 from typing import (
     TYPE_CHECKING,
@@ -25,8 +24,6 @@ from typing import (
 import torch
 from torch import Tensor
 import torch.nn as nn
-
-from fairscale.utils.state_dict import replace_by_prefix_
 
 if TYPE_CHECKING:
     from collections import OrderedDict  # noqa: F401
@@ -110,11 +107,11 @@ class FlatParameter(nn.Parameter):
 
 
 # Static types.
-FlatTypes = Union[FlatParameter]
+FlatTypes = FlatParameter
 ParamGroups = Optional[Union[List[List[nn.Parameter]], List[nn.Parameter]]]
 
 
-class FlattenParamsWrapper(nn.Module):
+class XlaFlattenParamsWrapper(nn.Module):
     """
     A wrapper for transparently flattening a Module's parameters.
 
@@ -122,7 +119,7 @@ class FlattenParamsWrapper(nn.Module):
     - removes tracing
     - supports shared parameters
     - handles state_dict/load_state_dict transparently
-    - is renamed to FlattenParamsWrapper
+    - is renamed to XlaFlattenParamsWrapper
     - refactored to use the FlatParameter class
     - extended to support flattening multiple groups of params (useful
       when different groups of params need different hyperparameters, like

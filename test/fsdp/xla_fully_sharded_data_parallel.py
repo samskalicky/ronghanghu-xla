@@ -32,7 +32,7 @@ from torch.nn.parameter import Parameter
 from torch.nn.utils.rnn import PackedSequence
 import torch_xla.core.xla_model as xm
 
-from .xla_flatten_params_wrapper import FlattenParamsWrapper
+from .xla_flatten_params_wrapper import XlaFlattenParamsWrapper
 
 if TYPE_CHECKING:
     from collections import OrderedDict  # noqa: F401
@@ -57,19 +57,16 @@ class TrainingState(Enum):
     BACKWARD_POST = auto()
 
 
-class FullyShardedDataParallel(nn.Module):
+class XlaFullyShardedDataParallel(nn.Module):
     """
-    A wrapper for sharding Module parameters across data parallel workers. This
-    is inspired by `Xu et al.`_ as well as the ZeRO Stage 3 from DeepSpeed_.
-    FullyShardedDataParallel is commonly shorten to FSDP.
-
-    .. _`Xu et al.`: https://arxiv.org/abs/2004.13336
-    .. _DeepSpeed: https://www.deepspeed.ai/
+    A wrapper for sharding Module parameters across data parallel workers in
+    PyTorch XLA. This is similar to `fairscale.nn.FullyShardedDataParallel`.
+    XlaFullyShardedDataParallel is commonly shorten to FSDP.
 
     Pseudo-code usage::
 
         my_module = my_module.to(xm.xla_device())
-        sharded_module = FullyShardedDataParallel(my_module)
+        sharded_module = XlaFullyShardedDataParallel(my_module)
         optim = torch.optim.Adam(sharded_module.parameters(), lr=0.0001)
         x = sharded_module(x, y=3, z=torch.Tensor([1]))
         loss = x.sum()
@@ -85,13 +82,21 @@ class FullyShardedDataParallel(nn.Module):
     .. warning::
 
         The module should be moved to TPU device *before* wrapping it with
-        FSDP.
+        FSDP. For nested FSDP, the inner FSDP modules also need to be on TPU
+        before wrapping. See "test_train_mp_mnist_nested_fsdp.py" for an
+        example implementation.
 
     .. warning::
 
         The optimizer must be initialized *after* the module has been wrapped,
         since FSDP will shard parameters in-place and this will break any
         previously initialized optimizers.
+
+    .. warning::
+
+        Please use `optim.step()` instead of `xm.optimizer_step(optim)` for
+        optimizer update. The latter averages the gradients across TPUs, which
+        is incorrect for FSDP.
 
     Args:
         module (nn.Module):
@@ -145,7 +150,7 @@ class FullyShardedDataParallel(nn.Module):
             to_be_flatten_params: List[List[Parameter]] = [params]
             non_flatten_params = []
         else:
-            # In XLA FSDP, we wrap all parameters with FlattenParamsWrapper
+            # In XLA FSDP, we wrap all parameters with XlaFlattenParamsWrapper
             # even if `flatten_parameters` is False. In this case each param
             # gets its own flatten group (so the flattening has no practical
             # effect on the param size or numbers, but allows us to get around
@@ -154,7 +159,7 @@ class FullyShardedDataParallel(nn.Module):
             non_flatten_params = []
         del param_names
 
-        self._fsdp_wrapped_module: nn.Module = FlattenParamsWrapper(
+        self._fsdp_wrapped_module: nn.Module = XlaFlattenParamsWrapper(
             module, param_list=to_be_flatten_params
         )
         del module  # free original module in case it helps garbage collection
@@ -217,15 +222,15 @@ class FullyShardedDataParallel(nn.Module):
         self.assert_state(TrainingState.IDLE)
         if recursive:
             for module in self.modules():
-                if isinstance(module, FullyShardedDataParallel) and module != self:
+                if isinstance(module, XlaFullyShardedDataParallel) and module != self:
                     module.set_gradient_divide_factors(pre, post, False)
         self.gradient_predivide_factor = pre
         self.gradient_postdivide_factor = post
 
     @property
-    def module(self) -> FlattenParamsWrapper:
+    def module(self) -> XlaFlattenParamsWrapper:
         """make model.module accessible, just like DDP."""
-        assert isinstance(self._fsdp_wrapped_module, FlattenParamsWrapper)
+        assert isinstance(self._fsdp_wrapped_module, XlaFlattenParamsWrapper)
         return self._fsdp_wrapped_module
 
     @property
@@ -430,7 +435,7 @@ class FullyShardedDataParallel(nn.Module):
         # need to set all of them to accumulate gradients.
         old_flags = []
         for m in self.modules():  # includes self
-            if isinstance(m, FullyShardedDataParallel):
+            if isinstance(m, XlaFullyShardedDataParallel):
                 old_flags.append((m, m._require_backward_grad_sync))
                 m._require_backward_grad_sync = False
         try:
@@ -464,7 +469,7 @@ class FullyShardedDataParallel(nn.Module):
             self.reshard_after_forward = False
 
     def _set_is_root(self) -> None:
-        """If ``True``, implies that no other :class:`FullyShardedDataParallel`
+        """If ``True``, implies that no other :class:`XlaFullyShardedDataParallel`
         instance wraps this one. Called once by :func:`_lazy_init`.
         Also sets self.children_share_process_group = True if all child
         instances share the same process group. If some child instances use a
@@ -485,7 +490,7 @@ class FullyShardedDataParallel(nn.Module):
         # give them a closure to try to queue a wait_for_post_backward.
         for n, m in self.named_modules():
             # `n != ""` excludes self.
-            if n != "" and isinstance(m, FullyShardedDataParallel):
+            if n != "" and isinstance(m, XlaFullyShardedDataParallel):
                 # We relax the assert for non-root instance, when the nested inialized module is wrapped
                 # again in FSDP later, for example after training to run inference.
                 assert m._is_root is None or not m._is_root
@@ -499,7 +504,7 @@ class FullyShardedDataParallel(nn.Module):
         assert self._is_root, "This should only be called on the root"
         self._output_pre_backward_hook_registered = []
         for n, m in self.named_modules():
-            if n != "" and isinstance(m, FullyShardedDataParallel):
+            if n != "" and isinstance(m, XlaFullyShardedDataParallel):
                 m._output_pre_backward_hook_registered = self._output_pre_backward_hook_registered
 
     def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
@@ -774,7 +779,7 @@ class FullyShardedDataParallel(nn.Module):
             self.assert_state(TrainingState.BACKWARD_PRE)
 
         # A backward pass is done, clean up below.
-        def _finalize_parameters(fsdp_module: FullyShardedDataParallel) -> None:
+        def _finalize_parameters(fsdp_module: XlaFullyShardedDataParallel) -> None:
             """Helper used below on all fsdp modules."""
             for p in fsdp_module.full_params:
                 if not p.requires_grad:
@@ -786,7 +791,7 @@ class FullyShardedDataParallel(nn.Module):
 
         # Update root and nested FSDP's hooks and flags.
         for m in self.modules():  # includes self
-            if isinstance(m, FullyShardedDataParallel):
+            if isinstance(m, XlaFullyShardedDataParallel):
                 _finalize_parameters(m)
                 m._pre_backward_hook_has_run = False
                 if any(p.requires_grad for p in m.parameters()):
