@@ -96,6 +96,15 @@ class XlaFullyShardedDataParallel(nn.Module):
         optimizer update. The latter averages the gradients across TPUs, which
         is incorrect for FSDP.
 
+    .. warning::
+
+        When saving checkpoints, the training process on each TPU needs to save
+        its own (sharded) model and optimizer state_dict. When resuming, all
+        training processes need to load their corresponding (sharded) model and
+        optimizer state_dict. Use `consolidate_xla_fsdp_model_state_dict` to
+        build a full model state_dict for the original unwrapped module from
+        the sharded model state_dict.
+
     Args:
         module (nn.Module):
             module to be wrapped with FSDP.
@@ -362,7 +371,7 @@ class XlaFullyShardedDataParallel(nn.Module):
             p_shard = nn.Parameter(shard_data, requires_grad=p.requires_grad)
             p_shard._orig_size = p.data.size()
             p_shard._is_sharded = True
-            p_shard_name = f"fp32shard.{module_name}.{n}".replace(".", "__")
+            p_shard_name = f"fsdp_shard.{module_name}.{n}".replace(".", "__")
             self.register_parameter(p_shard_name, p_shard)
             self.numel_padded_per_param.append(num_padded)
             self.sharded_params.append(p_shard)
