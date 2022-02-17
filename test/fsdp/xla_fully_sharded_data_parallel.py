@@ -104,9 +104,6 @@ class FullyShardedDataParallel(nn.Module):
         flatten_parameters (bool, Optional):
             if ``True``, flatten parameters into a single contiguous tensor,
             which improves training speed.
-        verbose (bool):
-            Set this to ``True`` to turn on verbose output for model's string representation.
-            Default: False
     """
 
     def __init__(
@@ -114,7 +111,6 @@ class FullyShardedDataParallel(nn.Module):
         module: nn.Module,
         reshard_after_forward: bool = True,
         flatten_parameters: bool = True,
-        verbose: bool = False,
     ):
         init_start = time.time()
         super().__init__()
@@ -125,7 +121,6 @@ class FullyShardedDataParallel(nn.Module):
         self.compute_dtype = torch.float32
         self.buffer_dtype = self.compute_dtype
         self.uncollected_opt_state: Dict[int, Dict] = {}
-        self.verbose = verbose
 
         self.gradient_predivide_factor: float = self._get_gradient_predivide_factor(self.world_size)
         self.gradient_postdivide_factor: float = self.world_size / self.gradient_predivide_factor
@@ -244,7 +239,6 @@ class FullyShardedDataParallel(nn.Module):
         self,
         max_norm: Union[float, int],
         norm_type: Union[float, int] = 2.0,
-        # filter_params_fn: Callable[[Any], Any] = None,
     ) -> torch.Tensor:
         """
         Clip all gradients at this point in time. The norm is computed over all
@@ -395,22 +389,10 @@ class FullyShardedDataParallel(nn.Module):
     def extra_repr(self) -> str:
         repr = (
             f"world_size={self.world_size}, "
+            f"rank={self.rank}, "
             f"flatten_parameters={self.flatten_parameters}, "
-            f"mixed_precision={self.mixed_precision}, "
+            f"reshard_after_forward={self.reshard_after_forward}"
         )
-        if self.verbose:
-            repr = (
-                f"rank={self.rank}, " + repr + f"reshard_after_forward={self.reshard_after_forward}, "
-                f"compute_dtype={self.compute_dtype}, "
-                f"buffer_dtype={self.buffer_dtype}, "
-                f"fp32_reduce_scatter={self.fp32_reduce_scatter}, "
-                f"compute_device={self.compute_device}"
-                f"move_params_to_cpu={self.move_params_to_cpu}, "
-                f"move_grads_to_cpu={self.move_grads_to_cpu}, "
-                f"bucket_cap_mb={self.bucket_cap_mb}, "
-                f"clear_autocast_cache={self.clear_autocast_cache}"
-                f"force_input_to_fp32={self.force_input_to_fp32}"
-            )
         return repr
 
     def __getattr__(self, name: str) -> Any:
@@ -419,36 +401,6 @@ class FullyShardedDataParallel(nn.Module):
             return super().__getattr__(name)  # defer to nn.Module's logic
         except AttributeError:
             return getattr(self.module, name)
-
-    def __getstate__(self) -> Dict[str, str]:
-        """Serialize the state of the current FSDP instance.
-
-        Some properties are not serializable (e.g., process groups, streams), so
-        we remove them and try to reconstruct them in :func:`__setstate__`.
-        """
-        state = copy.copy(self.__dict__)
-        state["is_sharded"] = [p._is_sharded for p in self.params]
-        state["orig_sizes"] = [p._orig_size for p in self.params]
-        self._reset_lazy_init()
-        return state
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Intercept state setting and perform needed changes on params."""
-        super().__setstate__(state)
-
-        def fixup(p: Parameter, is_sharded: bool, size: torch.Size) -> Parameter:
-            assert isinstance(p, Parameter)
-            p.data = p.data.clone()  # move tensors out of shared memory
-            p._is_sharded = is_sharded
-            p._orig_size = size
-            return p
-
-        self.params = [
-            fixup(p, is_sharded, size) for p, is_sharded, size in zip(self.params, self.is_sharded, self.orig_sizes)
-        ]
-        del self.is_sharded
-        del self.orig_sizes
-        self._reset_lazy_init()
 
     def __getitem__(self, key: int) -> Any:
         """Forward indexing calls in case the module is a nn.Sequential."""
