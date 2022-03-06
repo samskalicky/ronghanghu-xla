@@ -146,6 +146,7 @@ class XlaFlattenParamsWrapper(nn.Module):
         module: nn.Module,
         param_list: ParamGroups = None,
         flat_param_names: Optional[List[str]] = None,
+        auto_unflatten_state_dict: Optional[bool] = True,
     ):
         super().__init__()
         self._fpw_module = module
@@ -224,7 +225,7 @@ class XlaFlattenParamsWrapper(nn.Module):
         # Flag to indicate whether state_dict() should automatically unflatten
         # params. This defaults to True, but may be set to False if the user
         # explicitly requests a flat state dict via flat_state_dict().
-        self._auto_unflatten_state_dict = True
+        self._auto_unflatten_state_dict = auto_unflatten_state_dict
 
     @property
     def module(self) -> Any:

@@ -169,7 +169,9 @@ class XlaFullyShardedDataParallel(nn.Module):
         del param_names
 
         self._fsdp_wrapped_module: nn.Module = XlaFlattenParamsWrapper(
-            module, param_list=to_be_flatten_params
+            module,
+            param_list=to_be_flatten_params,
+            auto_unflatten_state_dict=False,
         )
         del module  # free original module in case it helps garbage collection
 
@@ -376,7 +378,8 @@ class XlaFullyShardedDataParallel(nn.Module):
             p_shard = nn.Parameter(shard_data, requires_grad=p.requires_grad)
             p_shard._orig_size = p.data.size()
             p_shard._is_sharded = True
-            p_shard_name = f"fsdp_shard.{module_name}.{n}".replace(".", "__")
+            p_shard._orig_name = f"{module_name}.{n}"
+            p_shard_name = f"_fsdp_shard.{p_shard._orig_name}".replace(".", "_FSDP_SHARD_SEPARATOR_")
             self.register_parameter(p_shard_name, p_shard)
             self.numel_padded_per_param.append(num_padded)
             self.sharded_params.append(p_shard)
