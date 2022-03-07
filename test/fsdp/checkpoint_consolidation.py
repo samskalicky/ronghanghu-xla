@@ -23,7 +23,7 @@ def consolidate_param(checkpoints, name, prefix, suffix):
         orig_size = shard_metadata[suffix]["_orig_size"]
 
     full_param = torch.cat(p_shard_list, dim=0)
-    full_param = full_param[:numel(orig_size)].view(*orig_size)
+    full_param = full_param[: numel(orig_size)].view(*orig_size)
 
     full_name = orig_name
     if prefix != "":
@@ -58,7 +58,7 @@ def consolidate_and_unflatten(checkpoints):
         if is_sharded:
             full_param, full_name = consolidate_param(checkpoints, name, prefix, suffix)
         else:
-            # unsharded buffers (just use rank 0's state dict)
+            # unsharded buffers (we'll just use rank 0's state dict for buffers)
             full_param, full_name = p, name
         full_state_dict[full_name] = full_param
 
@@ -75,8 +75,7 @@ def consolidate_and_unflatten(checkpoints):
                 full_state_dict[fn] = fp
 
     full_state_dict = OrderedDict(
-        (k.replace("_fsdp_wrapped_module.", ""), v)
-        for k, v in full_state_dict.items()
+        (k.replace("_fsdp_wrapped_module.", ""), v) for k, v in full_state_dict.items()
     )
 
     return full_state_dict
@@ -88,7 +87,10 @@ def consolidate_xla_fsdp_model_state_dict(
     ckpt_files = glob(ckpt_prefix + ckpt_suffix)
     print(f"found {len(ckpt_files)} checkpoint files")
     assert len(ckpt_files) > 0
-    checkpoints = [torch.load(f) for f in ckpt_files]
+    checkpoints = []
+    for f in ckpt_files:
+        ckpt = torch.load(f, map_location="cpu")
+        checkpoints.append(ckpt)
     checkpoints.sort(key=lambda c: c["shard_metadata"]["rank"])
     for rank, ckpt in enumerate(checkpoints):
         assert ckpt["shard_metadata"]["rank"] == rank
@@ -104,15 +106,21 @@ def consolidate_xla_fsdp_model_state_dict(
 def main():
     parser = ArgumentParser()
     parser.add_argument(
-        "--ckpt_prefix", type=str, required=True,
+        "--ckpt_prefix",
+        type=str,
+        required=True,
         help="the path prefix of the XLA FSDP checkpoints to be consolidated",
     )
     parser.add_argument(
-        "--ckpt_suffix", type=str, default="_rank-*-of-*.pth",
+        "--ckpt_suffix",
+        type=str,
+        default="_rank-*-of-*.pth",
         help="the path suffix of the XLA FSDP checkpoints to be consolidated",
     )
     parser.add_argument(
-        "--save_path", type=str, default="",
+        "--save_path",
+        type=str,
+        default="",
         help=(
             "The save path of the output consolidated model state dict "
             "(default is ckpt_prefix + '_consolidated.pth')"
