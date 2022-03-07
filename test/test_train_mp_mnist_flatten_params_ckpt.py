@@ -1,19 +1,12 @@
 import args_parse
 
-MODEL_OPTS = {
-    '--reshard_after_forward': {'action': 'store_true'},
-    '--flatten_parameters': {'action': 'store_true'},
-}
-
 FLAGS = args_parse.parse_common_options(
     datadir='/tmp/mnist-data',
     batch_size=128,
     momentum=0.5,
     lr=0.01,
     target_accuracy=98.0,
-    num_epochs=18,
-    opts=MODEL_OPTS.items(),
-)
+    num_epochs=18)
 
 import os
 import shutil
@@ -32,41 +25,19 @@ import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.test.test_utils as test_utils
 
-from fsdp.xla_fully_sharded_data_parallel import XlaFullyShardedDataParallel as FSDP
+from fsdp.xla_flatten_params_wrapper import XlaFlattenParamsWrapper
 
 
-class NestedFSDPMNIST(nn.Module):
+class MNIST(nn.Module):
 
-  def __init__(self, flags, device):
-    super(NestedFSDPMNIST, self).__init__()
+  def __init__(self):
+    super(MNIST, self).__init__()
     self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
     self.bn1 = nn.BatchNorm2d(10)
     self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
     self.bn2 = nn.BatchNorm2d(20)
     self.fc1 = nn.Linear(320, 50)
     self.fc2 = nn.Linear(50, 10)
-
-    # wrap conv1, conv2, fc1, and fc2 with inner FSDP
-    self.conv1 = FSDP(
-      self.conv1.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
-    self.conv2 = FSDP(
-      self.conv2.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
-    self.fc1 = FSDP(
-      self.fc1.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
-    self.fc2 = FSDP(
-      self.fc2.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
 
   def forward(self, x):
     x = F.relu(F.max_pool2d(self.conv1(x), 2))
@@ -143,13 +114,9 @@ def train_mnist(flags, **kwargs):
   lr = flags.lr * xm.xrt_world_size()
 
   device = xm.xla_device()
-  model = NestedFSDPMNIST(flags, device).to(device)
-  model = FSDP(
-    model,
-    reshard_after_forward=flags.reshard_after_forward,
-    flatten_parameters=flags.flatten_parameters,
-  )
-
+  model = MNIST().to(device)
+  model = XlaFlattenParamsWrapper(model, param_list=[list(model.parameters())])
+  assert len(list(model.parameters())) == 1
   writer = None
   if xm.is_master_ordinal():
     writer = test_utils.get_summary_writer(flags.logdir)
@@ -164,8 +131,7 @@ def train_mnist(flags, **kwargs):
       output = model(data)
       loss = loss_fn(output, target)
       loss.backward()
-      # do not reduce the gradients (since we are using sharded params)
-      optimizer.step()
+      xm.optimizer_step(optimizer)
       tracker.add(flags.batch_size)
       if step % flags.log_steps == 0:
         xm.add_step_closure(
@@ -211,11 +177,10 @@ def train_mnist(flags, **kwargs):
   xm.master_print('Max Accuracy: {:.2f}%'.format(max_accuracy))
 
   # test saving the state dict
-  ckpt_path = f"/checkpoint/ronghanghu/workspace/fsdp_ckpt_test/mnist/final_{xm.get_ordinal():08d}.pth"
+  ckpt_path = f"/checkpoint/ronghanghu/workspace/fsdp_ckpt_test/mnist/flatten_final.pth"
   state_dict = model.state_dict()
-  shard_metadata = model.get_shard_metadata()
-  ckpt = {"model": state_dict, "shard_metadata": shard_metadata}
-  xm.save(ckpt, ckpt_path, master_only=False)
+  ckpt = {"model": state_dict}
+  xm.save(ckpt, ckpt_path, master_only=True, global_master=True)
   print(f"checkpoint saved to {ckpt_path}\n", end="")
   # test loading the state dict
   state_dict = torch.load(ckpt_path)["model"]

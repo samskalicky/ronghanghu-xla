@@ -25,7 +25,7 @@ import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.test.test_utils as test_utils
 
-from fsdp.xla_flatten_params_wrapper import FlattenParamsWrapper
+from fsdp.xla_flatten_params_wrapper import XlaFlattenParamsWrapper
 
 
 class MNIST(nn.Module):
@@ -115,7 +115,7 @@ def train_mnist(flags, **kwargs):
 
   device = xm.xla_device()
   model = MNIST().to(device)
-  model = FlattenParamsWrapper(model, param_list=[list(model.parameters())])
+  model = XlaFlattenParamsWrapper(model, param_list=[list(model.parameters())])
   assert len(list(model.parameters())) == 1
   writer = None
   if xm.is_master_ordinal():

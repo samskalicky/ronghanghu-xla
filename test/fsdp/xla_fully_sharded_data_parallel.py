@@ -376,11 +376,11 @@ class XlaFullyShardedDataParallel(nn.Module):
 
             shard_data, num_padded = self._get_shard(p.data)
             p_shard = nn.Parameter(shard_data, requires_grad=p.requires_grad)
-            p_shard._orig_size = p.data.size()
             p_shard._is_sharded = True
+            p_shard._orig_size = p.data.size()
             p_shard._orig_name = f"{module_name}.{n}"
-            p_shard_name = f"_fsdp_shard.{p_shard._orig_name}".replace(".", "_FSDP_SHARD_SEPARATOR_")
-            self.register_parameter(p_shard_name, p_shard)
+            p_shard._name = f"_fsdp_shard.{p_shard._orig_name}".replace(".", "_FSDP_SHARD_SEPARATOR_")
+            self.register_parameter(p_shard._name, p_shard)
             self.numel_padded_per_param.append(num_padded)
             self.sharded_params.append(p_shard)
             p._sharded_param = p_shard  # add a handle to the sharded parameter
@@ -876,6 +876,29 @@ class XlaFullyShardedDataParallel(nn.Module):
                 print(f"ERROR: {msg}")
                 traceback.print_stack()
             raise ValueError(msg)
+
+    def get_shard_metadata(self):
+        # Get the shard metadata for checkpoint consolidation
+        metadata = {}
+        for module_name, m in self.named_modules():  # includes self
+            if not isinstance(m, XlaFullyShardedDataParallel):
+                continue
+            sharded_param_info = {}
+            for p_shard in m.sharded_params:
+                sharded_param_info[p_shard._name] = {
+                    "_orig_size": p_shard._orig_size,
+                    "_orig_name": p_shard._orig_name,
+                }
+            # remove "_fpw_module." from module names since it is also removed in
+            # XlaFullyShardedDataParallel's state_dict()
+            module_name = module_name.replace("_fpw_module.", "")
+            metadata[module_name] = {
+                "world_size": m.world_size,
+                "rank": m.rank,
+                "sharded_param_info": sharded_param_info,
+            }
+
+        return metadata
 
     def _print_r0(self, msg: str, restart: bool = False) -> None:
         """Debugging utility to print memory usage stats nicely on rank 0"""
