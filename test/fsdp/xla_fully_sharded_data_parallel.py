@@ -879,25 +879,34 @@ class XlaFullyShardedDataParallel(nn.Module):
 
     def get_shard_metadata(self):
         # Get the shard metadata for checkpoint consolidation
-        metadata = {}
+        shard_info = {}
+        flatten_info = {}
         for module_name, m in self.named_modules():  # includes self
-            if not isinstance(m, XlaFullyShardedDataParallel):
-                continue
-            sharded_param_info = {}
-            for p_shard in m.sharded_params:
-                sharded_param_info[p_shard._name] = {
-                    "_orig_size": p_shard._orig_size,
-                    "_orig_name": p_shard._orig_name,
-                }
             # remove "_fpw_module." from module names since it is also removed in
             # XlaFullyShardedDataParallel's state_dict()
             module_name = module_name.replace("_fpw_module.", "")
-            metadata[module_name] = {
-                "world_size": m.world_size,
-                "rank": m.rank,
-                "sharded_param_info": sharded_param_info,
-            }
 
+            if isinstance(m, XlaFullyShardedDataParallel):
+                sharded_param_info = {}
+                for p_shard in m.sharded_params:
+                    sharded_param_info[p_shard._name] = {
+                        "_orig_size": p_shard._orig_size,
+                        "_orig_name": p_shard._orig_name,
+                    }
+                shard_info[module_name] = {
+                    "world_size": m.world_size,
+                    "rank": m.rank,
+                    "sharded_param_info": sharded_param_info,
+                }
+
+            if isinstance(m, XlaFlattenParamsWrapper):
+                for i in range(len(m.flat_params)):
+                    param_name = f"flat_param_{i}"
+                    if module_name != "":
+                        param_name = module_name + "." + param_name
+                    flatten_info[param_name] = m.metadata(i)
+
+        metadata = {"shard_info": shard_info, "flatten_info": flatten_info}
         return metadata
 
     def _print_r0(self, msg: str, restart: bool = False) -> None:
