@@ -1,12 +1,18 @@
 import args_parse
 
+MODEL_OPTS = {
+    '--ckpt_path': {'type': str, 'default': "Please specify"},
+}
+
 FLAGS = args_parse.parse_common_options(
     datadir='/tmp/mnist-data',
     batch_size=128,
     momentum=0.5,
     lr=0.01,
     target_accuracy=98.0,
-    num_epochs=18)
+    num_epochs=18,
+    opts=MODEL_OPTS.items(),
+)
 
 import os
 import shutil
@@ -156,35 +162,25 @@ def train_mnist(flags, **kwargs):
   train_device_loader = pl.MpDeviceLoader(train_loader, device)
   test_device_loader = pl.MpDeviceLoader(test_loader, device)
   accuracy, max_accuracy = 0.0, 0.0
-  for epoch in range(1, flags.num_epochs + 1):
-    xm.master_print('Epoch {} train begin {}'.format(epoch, test_utils.now()))
-    train_loop_fn(train_device_loader)
-    xm.master_print('Epoch {} train end {}'.format(epoch, test_utils.now()))
 
-    accuracy = test_loop_fn(test_device_loader)
-    xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
-        epoch, test_utils.now(), accuracy))
-    max_accuracy = max(accuracy, max_accuracy)
-    test_utils.write_to_summary(
-        writer,
-        epoch,
-        dict_to_write={'Accuracy/test': accuracy},
-        write_xla_metrics=True)
-    if flags.metrics_debug:
-      xm.master_print(met.metrics_report())
+  ckpt_path = flags.ckpt_path
+  state_dict = torch.load(ckpt_path)["model"]
+  model.load_state_dict(state_dict)
+
+  accuracy = test_loop_fn(test_device_loader)
+  xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
+      0, test_utils.now(), accuracy))
+  max_accuracy = max(accuracy, max_accuracy)
+  test_utils.write_to_summary(
+      writer,
+      0,
+      dict_to_write={'Accuracy/test': accuracy},
+      write_xla_metrics=True)
+  if flags.metrics_debug:
+    xm.master_print(met.metrics_report())
 
   test_utils.close_summary_writer(writer)
   xm.master_print('Max Accuracy: {:.2f}%'.format(max_accuracy))
-
-  # test saving the state dict
-  ckpt_path = f"/checkpoint/ronghanghu/workspace/fsdp_ckpt_test/mnist/flatten_final.pth"
-  state_dict = model.state_dict()
-  ckpt = {"model": state_dict}
-  xm.save(ckpt, ckpt_path, master_only=True, global_master=True)
-  print(f"checkpoint saved to {ckpt_path}\n", end="")
-  # test loading the state dict
-  state_dict = torch.load(ckpt_path)["model"]
-  model.load_state_dict(state_dict)
   return max_accuracy
 
 

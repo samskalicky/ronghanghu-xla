@@ -3,6 +3,7 @@ import args_parse
 MODEL_OPTS = {
     '--reshard_after_forward': {'action': 'store_true'},
     '--flatten_parameters': {'action': 'store_true'},
+    '--ckpt_prefix': {'type': str, 'default': '/checkpoint/ronghanghu/workspace/fsdp_ckpt_test/mnist/nested_fsdp_final'},
 }
 
 FLAGS = args_parse.parse_common_options(
@@ -195,6 +196,24 @@ def train_mnist(flags, **kwargs):
     train_loop_fn(train_device_loader)
     xm.master_print('Epoch {} train end {}'.format(epoch, test_utils.now()))
 
+    if epoch == flags.num_epochs:
+      # test saving the state dict
+      ckpt_prefix = flags.ckpt_prefix
+      rank = xm.get_ordinal()
+      world_size = xm.xrt_world_size()
+      ckpt_path = f"{ckpt_prefix}_rank-{rank:08d}-of-{world_size:08d}.pth"
+      ckpt = {
+        "model": model.state_dict(),
+        "shard_metadata": model.get_shard_metadata(),
+        "optimizer": optimizer.state_dict()
+      }
+      xm.save(ckpt, ckpt_path, master_only=False)
+      print(f"checkpoint saved to {ckpt_path}\n", end="")
+      # test loading the state dict
+      ckpt = torch.load(ckpt_path)
+      model.load_state_dict(ckpt["model"])
+      optimizer.load_state_dict(ckpt["optimizer"])
+
     accuracy = test_loop_fn(test_device_loader)
     xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
         epoch, test_utils.now(), accuracy))
@@ -209,17 +228,6 @@ def train_mnist(flags, **kwargs):
 
   test_utils.close_summary_writer(writer)
   xm.master_print('Max Accuracy: {:.2f}%'.format(max_accuracy))
-
-  # test saving the state dict
-  ckpt_path = f"/checkpoint/ronghanghu/workspace/fsdp_ckpt_test/mnist/final_{xm.get_ordinal():08d}.pth"
-  state_dict = model.state_dict()
-  shard_metadata = model.get_shard_metadata()
-  ckpt = {"model": state_dict, "shard_metadata": shard_metadata}
-  xm.save(ckpt, ckpt_path, master_only=False)
-  print(f"checkpoint saved to {ckpt_path}\n", end="")
-  # test loading the state dict
-  state_dict = torch.load(ckpt_path)["model"]
-  model.load_state_dict(state_dict)
   return max_accuracy
 
 
