@@ -893,11 +893,7 @@ class XlaFullyShardedDataParallel(nn.Module):
                         "_orig_size": p_shard._orig_size,
                         "_orig_name": p_shard._orig_name,
                     }
-                shard_info[module_name] = {
-                    "world_size": m.world_size,
-                    "rank": m.rank,
-                    "sharded_param_info": sharded_param_info,
-                }
+                shard_info[module_name] = sharded_param_info
 
             if isinstance(m, XlaFlattenParamsWrapper):
                 for i in range(len(m.flat_params)):
@@ -906,7 +902,12 @@ class XlaFullyShardedDataParallel(nn.Module):
                         param_name = module_name + "." + param_name
                     flatten_info[param_name] = m.metadata(i)
 
-        metadata = {"shard_info": shard_info, "flatten_info": flatten_info}
+        metadata = {
+            "shard_info": shard_info,
+            "flatten_info": flatten_info,
+            "world_size": self.world_size,
+            "rank": self.rank,
+        }
         return metadata
 
     def _print_r0(self, msg: str, restart: bool = False) -> None:
