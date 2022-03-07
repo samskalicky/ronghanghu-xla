@@ -33,7 +33,7 @@ def consolidate_param(checkpoints, name, prefix, suffix):
 
 
 def unflatten_param(p, metadata, prefix):
-    param_names, param_shapes, param_numels = metadata    
+    param_names, param_shapes, param_numels = metadata
     full_params = (t.view(s) for (t, s) in zip(p.split(param_numels), param_shapes))
     full_names = [n.replace("_fpw_module.", "") for n in param_names]
     if prefix != "":
@@ -44,9 +44,7 @@ def unflatten_param(p, metadata, prefix):
 def consolidate_and_unflatten(checkpoints):
     full_state_dict = OrderedDict()
 
-    # consolidate the checkpoints
-    world_size = len(checkpoints)
-
+    # consolidate the sharded parameters
     for name, p in checkpoints[0]["model"].items():
         is_sharded = False
         name_splits = name.split(".")
@@ -64,6 +62,7 @@ def consolidate_and_unflatten(checkpoints):
             full_param, full_name = p, name
         full_state_dict[full_name] = full_param
 
+    # unflatten the parameters
     flatten_info = checkpoints[0]["shard_metadata"]["flatten_info"]
     for name in list(full_state_dict):
         if "_fsdp_wrapped_module.flat_param_" in name:
@@ -84,7 +83,7 @@ def consolidate_and_unflatten(checkpoints):
 
 
 def consolidate_xla_fsdp_model_state_dict(
-    ckpt_prefix, ckpt_suffix="*.pth", save_path=""
+    ckpt_prefix, ckpt_suffix="_rank-*-of-*.pth", save_path=""
 ):
     ckpt_files = glob(ckpt_prefix + ckpt_suffix)
     print(f"found {len(ckpt_files)} checkpoint files")
@@ -110,11 +109,14 @@ def main():
     )
     parser.add_argument(
         "--ckpt_suffix", type=str, default="_rank-*-of-*.pth",
-        help="the path suffix pattern of the XLA FSDP checkpoints to be consolidated"
+        help="the path suffix of the XLA FSDP checkpoints to be consolidated",
     )
     parser.add_argument(
         "--save_path", type=str, default="",
-        help="The save path of the consolidated checkpoint (default will be ckpt_prefix + '_consolidated.pth')",
+        help=(
+            "The save path of the output consolidated model state dict "
+            "(default is ckpt_prefix + '_consolidated.pth')"
+        ),
     )
     args = parser.parse_args()
     consolidate_xla_fsdp_model_state_dict(
