@@ -34,7 +34,7 @@ def consolidate_param(checkpoints, name, prefix, suffix):
 
 def unflatten_param(p, metadata, prefix):
     param_names, param_shapes, param_numels = metadata
-    full_params = (t.view(s) for (t, s) in zip(p.split(param_numels), param_shapes))
+    full_params = [t.view(s) for (t, s) in zip(p.split(param_numels), param_shapes)]
     full_names = [n.replace("_fpw_module.", "") for n in param_names]
     if prefix != "":
         full_names = [prefix + "." + n for n in full_names]
