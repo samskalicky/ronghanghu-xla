@@ -123,6 +123,25 @@ def _train_update(device, step, loss, tracker, epoch, writer):
       summary_writer=writer)
 
 
+def broadcast_xla_master_model_param(model):
+  """
+  Broadcast the model parameters from master process to other processes
+  """
+  parameters_and_buffers = []
+  is_master = xm.is_master_ordinal(local=False)
+  for p in chain(model.parameters(), model.buffers()):
+    # Set all params in non-master devices to zero so that all_reduce is
+    # equivalent to broadcasting parameters from master to other devices.
+    if not is_master:
+      zero = torch.tensor(0, dtype=p.data.dtype, device=p.data.device)
+      p.data.mul_(zero)
+    parameters_and_buffers.append(p.data)
+  xm.wait_device_ops()
+  xm.all_reduce(xm.REDUCE_SUM, parameters_and_buffers)
+  xm.mark_step()
+  xm.rendezvous("broadcast_xla_master_model_param")
+
+
 def train_imagenet():
   print('==> Preparing data..')
   img_dim = get_model_property('img_dim')
