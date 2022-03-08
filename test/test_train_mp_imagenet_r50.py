@@ -30,6 +30,15 @@ MODEL_OPTS = {
     '--test_only_at_end': {
         'action': 'store_true',
     },
+    '--ckpt_dir': {
+        'type': str, "default": "Please specify",
+    },
+    '--ckpt_interval': {
+        'type': int, "default": 5,
+    },
+    '--eval_interval': {
+        'type': int, "default": 5,
+    },
     # AMP only works with XLA:GPU
     '--amp': {
         'action': 'store_true',
@@ -279,11 +288,15 @@ def train_imagenet():
   train_device_loader = pl.MpDeviceLoader(train_loader, device)
   test_device_loader = pl.MpDeviceLoader(test_loader, device)
   accuracy, max_accuracy = 0.0, 0.0
+  os.makedirs(FLAGS.ckpt_dir, exist_ok=True)
   for epoch in range(1, FLAGS.num_epochs + 1):
     xm.master_print('Epoch {} train begin {}'.format(epoch, test_utils.now()))
     train_loop_fn(train_device_loader, epoch)
     xm.master_print('Epoch {} train end {}'.format(epoch, test_utils.now()))
-    if not FLAGS.test_only_at_end or epoch == FLAGS.num_epochs:
+    run_eval = (
+        (epoch % FLAGS.eval_interval == 0 and not FLAGS.test_only_at_end) or
+        epoch == FLAGS.num_epochs)
+    if run_eval:
       accuracy = test_loop_fn(test_device_loader, epoch)
       xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
           epoch, test_utils.now(), accuracy))
@@ -293,6 +306,11 @@ def train_imagenet():
           epoch,
           dict_to_write={'Accuracy/test': accuracy},
           write_xla_metrics=True)
+    if epoch % FLAGS.ckpt_interval == 0 or epoch == FLAGS.num_epochs:
+      ckpt = {"model": model.state_dict(), "optimizer": optimizer.state_dict()}
+      ckpt_file = os.path.join(FLAGS.ckpt_dir, f"checkpoint-{epoch}.pth")
+      xm.save(ckpt, ckpt_file, global_master=True)
+      xm.master_print(f"checkpoint saved to {ckpt_file}")
     if FLAGS.metrics_debug:
       xm.master_print(met.metrics_report())
 
