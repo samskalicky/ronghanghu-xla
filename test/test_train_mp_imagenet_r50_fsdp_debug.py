@@ -141,6 +141,9 @@ def setup_for_distributed(is_master):
 
 
 def train_imagenet():
+    is_master = xm.is_master_ordinal(local=False)
+    setup_for_distributed(is_master)
+
     xm.master_print("==> Preparing data..")
     img_dim = get_model_property("img_dim")
     if FLAGS.fake_data:
@@ -224,6 +227,9 @@ def train_imagenet():
             persistent_workers=True,
         )
 
+    xm.rendezvous("data loading completed")
+    xm.master_print("data loading completed")
+
     torch.manual_seed(42)
 
     device = xm.xla_device()
@@ -233,6 +239,9 @@ def train_imagenet():
         reshard_after_forward=FLAGS.reshard_after_forward,
         flatten_parameters=FLAGS.flatten_parameters,
     )
+    xm.rendezvous("FSDP model init completed")
+    xm.master_print("FSDP model init completed")
+
     writer = None
     optimizer = optim.SGD(
         model.parameters(), lr=FLAGS.lr, momentum=FLAGS.momentum, weight_decay=1e-4
@@ -252,9 +261,7 @@ def train_imagenet():
     if FLAGS.amp:
         scaler = GradScaler(use_zero_grad=FLAGS.use_zero_grad)
 
-    is_master = xm.is_master_ordinal(local=False)
     iter_wrapper = tqdm if is_master else lambda x: x
-    setup_for_distributed(is_master)
 
     def train_loop_fn(loader, epoch):
         tracker = xm.RateTracker()
@@ -297,6 +304,9 @@ def train_imagenet():
     test_device_loader = pl.MpDeviceLoader(test_loader, device)
     accuracy, max_accuracy = 0.0, 0.0
     os.makedirs(FLAGS.ckpt_dir, exist_ok=True)
+
+    xm.rendezvous("training begins")
+    xm.master_print("training begins")
     for epoch in range(1, FLAGS.num_epochs + 1):
         train_loop_fn(train_device_loader, epoch)
         run_eval = (
