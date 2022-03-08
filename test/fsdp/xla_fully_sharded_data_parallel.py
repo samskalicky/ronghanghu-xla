@@ -187,6 +187,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         # self._param_name_groups = param_name_groups  # not supported in XLA FSDP
 
         # Shard module parameters in place
+        self._dummy_data_placeholder = torch.empty(1, device=xm.xla_device())
         self._shard_parameters_(params_to_shard)
 
         # Make sure all parameters are sharded.
@@ -385,7 +386,7 @@ class XlaFullyShardedDataParallel(nn.Module):
             self.sharded_params.append(p_shard)
             p._sharded_param = p_shard  # add a handle to the sharded parameter
             # free the original full parameter
-            p.data = p.data.new_zeros(0)
+            p.data = self._dummy_data_placeholder
             p._has_full_param = False
 
         assert len(self.numel_padded_per_param) == len(self.full_params)
@@ -857,7 +858,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         for p in params:
             if p._has_full_param:
                 # free the original full parameter
-                p.data = p.data.new_zeros(0)
+                p.data = self._dummy_data_placeholder
                 p._has_full_param = False
 
     def assert_state(self, state: Union[TrainingState, List[TrainingState]]) -> None:
