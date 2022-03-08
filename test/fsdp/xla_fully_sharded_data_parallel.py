@@ -385,7 +385,7 @@ class XlaFullyShardedDataParallel(nn.Module):
             self.sharded_params.append(p_shard)
             p._sharded_param = p_shard  # add a handle to the sharded parameter
             # free the original full parameter
-            p.data = p.data.new_zeros(1)
+            p.data = p.data.new_zeros(0)
             p._has_full_param = False
 
         assert len(self.numel_padded_per_param) == len(self.full_params)
@@ -857,7 +857,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         for p in params:
             if p._has_full_param:
                 # free the original full parameter
-                p.data = p.data.new_zeros(1)
+                p.data = p.data.new_zeros(0)
                 p._has_full_param = False
 
     def assert_state(self, state: Union[TrainingState, List[TrainingState]]) -> None:
