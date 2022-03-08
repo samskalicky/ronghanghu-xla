@@ -120,6 +120,26 @@ def get_model_property(key):
     return model_fn
 
 
+def setup_for_distributed(is_master):
+    """
+    This function disables printing when not in master process
+    """
+    import builtins
+    builtin_print = builtins.print
+
+    def print(*args, **kwargs):
+        force = kwargs.pop('force', False)
+        if args == ('torch_xla.core.xla_model::mark_step',):
+            # XLA server step tracking
+            if is_master:
+                builtin_print(*args, **kwargs)
+            return
+        if is_master or force:
+            builtin_print(*args, **kwargs)
+
+    builtins.print = print
+
+
 def train_imagenet():
     xm.master_print("==> Preparing data..")
     img_dim = get_model_property("img_dim")
@@ -232,7 +252,9 @@ def train_imagenet():
     if FLAGS.amp:
         scaler = GradScaler(use_zero_grad=FLAGS.use_zero_grad)
 
-    iter_wrapper = tqdm if xm.is_master_ordinal(local=False) else lambda x: x
+    is_master = xm.is_master_ordinal(local=False)
+    iter_wrapper = tqdm if is_master else lambda x: x
+    setup_for_distributed(is_master)
 
     def train_loop_fn(loader, epoch):
         tracker = xm.RateTracker()
