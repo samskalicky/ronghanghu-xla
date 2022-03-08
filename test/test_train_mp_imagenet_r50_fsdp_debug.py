@@ -261,12 +261,12 @@ def train_imagenet():
     if FLAGS.amp:
         scaler = GradScaler(use_zero_grad=FLAGS.use_zero_grad)
 
-    iter_wrapper = tqdm if is_master else lambda x: x
-
     def train_loop_fn(loader, epoch):
         tracker = xm.RateTracker()
         model.train()
-        for step, (data, target) in iter_wrapper(enumerate(loader)):
+        xm.master_print(f"training epoch {epoch}")
+        for step, (data, target) in enumerate(loader):
+            xm.master_print(f"\trunning step {step}/{len(loader)}")
             optimizer.zero_grad()
             if FLAGS.amp:
                 with autocast():
@@ -291,7 +291,9 @@ def train_imagenet():
     def test_loop_fn(loader, epoch):
         total_samples, correct = 0, 0
         model.eval()
-        for step, (data, target) in iter_wrapper(enumerate(loader)):
+        xm.master_print(f"testing epoch {epoch}")
+        for step, (data, target) in enumerate(loader):
+            xm.master_print(f"\trunning step {step}/{len(loader)}")
             output = model(data)
             pred = output.max(1, keepdim=True)[1]
             correct += pred.eq(target.view_as(pred)).sum()
