@@ -331,7 +331,7 @@ def train_imagenet():
         FLAGS.ckpt_dir,
         f"checkpoint-{epoch}_rank-{rank:08d}-of-{world_size:08d}.pth"
       )
-      xm.save(ckpt, ckpt_file, global_master=True)
+      xm.save(ckpt, ckpt_file, master_only=False)
       xm.master_print(f"checkpoint saved to {ckpt_file}")
     if FLAGS.metrics_debug:
       xm.master_print(met.metrics_report())
