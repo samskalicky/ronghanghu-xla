@@ -183,7 +183,7 @@ def train_mnist(flags, **kwargs):
       ckpt = {
         "model": model.state_dict(),
         "shard_metadata": model.get_shard_metadata(),
-        "optimizer": optimizer.state_dict()
+        "optimizer": optimizer.state_dict(),
       }
       xm.save(ckpt, ckpt_path, master_only=False)
       print(f"checkpoint saved to {ckpt_path}\n", end="")
