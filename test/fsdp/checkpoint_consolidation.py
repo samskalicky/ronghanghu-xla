@@ -94,14 +94,14 @@ def consolidate_xla_fsdp_model_state_dict(
     checkpoints_and_paths.sort(key=lambda c: c[0]["shard_metadata"]["rank"])
     checkpoints = [c[0] for c in checkpoints_and_paths]
     for rank, (ckpt, path) in enumerate(checkpoints_and_paths):
-        assert ckpt["shard_metadata"]["rank"] == rank, (
-            f'Expecting rank {ckpt["shard_metadata"]["rank"]} for {path} but it is '
-            f"ranked {rank} (out of {len(checkpoints)} files). "
-            f"Please check if you have missing or unexpected files in {ckpt_path_pattern}."
-        )
         assert ckpt["shard_metadata"]["world_size"] == len(checkpoints), (
             f'Expecting {ckpt["shard_metadata"]["world_size"]} files '
             f"(based on metadata in {path}) but got {len(checkpoints)} files. "
+            f"Please check if you have missing or unexpected files in {ckpt_path_pattern}."
+        )
+        assert ckpt["shard_metadata"]["rank"] == rank, (
+            f'Expecting rank {ckpt["shard_metadata"]["rank"]} for {path} but it is '
+            f"ranked {rank} (out of {len(checkpoints)} files). "
             f"Please check if you have missing or unexpected files in {ckpt_path_pattern}."
         )
 
