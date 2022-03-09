@@ -3,7 +3,7 @@ import args_parse
 MODEL_OPTS = {
     '--reshard_after_forward': {'action': 'store_true'},
     '--flatten_parameters': {'action': 'store_true'},
-    '--ckpt_prefix': {'type': str, 'default': '/checkpoint/ronghanghu/workspace/fsdp_ckpt_test/mnist/nested_fsdp_final'},
+    '--ckpt_prefix': {'type': str, 'default': 'Please specify'},
 }
 
 FLAGS = args_parse.parse_common_options(
