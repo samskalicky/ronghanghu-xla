@@ -3,6 +3,7 @@ import args_parse
 MODEL_OPTS = {
     '--reshard_after_forward': {'action': 'store_true'},
     '--flatten_parameters': {'action': 'store_true'},
+    '--use_nested_fsdp': {'action': 'store_true'},
     '--ckpt_prefix': {'type': str, 'default': 'Please specify'},
 }
 
@@ -36,10 +37,10 @@ import torch_xla.test.test_utils as test_utils
 from fsdp.xla_fully_sharded_data_parallel import XlaFullyShardedDataParallel as FSDP
 
 
-class NestedFSDPMNIST(nn.Module):
+class FSDPMNIST(nn.Module):
 
   def __init__(self, flags, device):
-    super(NestedFSDPMNIST, self).__init__()
+    super(FSDPMNIST, self).__init__()
     self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
     self.bn1 = nn.BatchNorm2d(10)
     self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
@@ -47,27 +48,20 @@ class NestedFSDPMNIST(nn.Module):
     self.fc1 = nn.Linear(320, 50)
     self.fc2 = nn.Linear(50, 10)
 
-    # wrap conv1, conv2, fc1, and fc2 with inner FSDP
-    self.conv1 = FSDP(
-      self.conv1.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
-    self.conv2 = FSDP(
-      self.conv2.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
-    self.fc1 = FSDP(
-      self.fc1.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
-    self.fc2 = FSDP(
-      self.fc2.to(device),
-      reshard_after_forward=flags.reshard_after_forward,
-      flatten_parameters=flags.flatten_parameters,
-    )
+    def wrap(m):
+      if not flags.use_nested_fsdp:
+        return m
+      return FSDP(
+        m.to(device),
+        reshard_after_forward=flags.reshard_after_forward,
+        flatten_parameters=flags.flatten_parameters,
+      )
+
+    # wrap a few sub-modules (conv1, conv2, fc1, and fc2 with inner FSDP)
+    self.conv1 = wrap(self.conv1)
+    self.conv2 = wrap(self.conv2)
+    self.fc1 = wrap(self.fc1)
+    self.fc2 = wrap(self.fc2)
 
   def forward(self, x):
     x = F.relu(F.max_pool2d(self.conv1(x), 2))
@@ -144,7 +138,7 @@ def train_mnist(flags, **kwargs):
   lr = flags.lr * xm.xrt_world_size()
 
   device = xm.xla_device()
-  model = NestedFSDPMNIST(flags, device).to(device)
+  model = FSDPMNIST(flags, device).to(device)
   model = FSDP(
     model,
     reshard_after_forward=flags.reshard_after_forward,
