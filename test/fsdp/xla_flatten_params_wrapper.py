@@ -81,7 +81,7 @@ class FlatParameter(nn.Parameter):
             raise ValueError(
                 f"Incorrect numel of supplied data: got {data.numel()} but expected {sum(self._param_numels)}"
             )
-        return (t.view(s) for (t, s) in zip(data.split(self._param_numels), self._param_shapes))
+        return (t.view(s) for (t, s) in zip(_split_tensor(data, self._param_numels), self._param_shapes))
 
     def metadata(self) -> Tuple[List[str], List[torch.Size], List[int]]:
         """Return tuple of (names, shapes, numels) metadata for this flat parameter."""
@@ -531,3 +531,16 @@ def replace_by_prefix_(
         new_key = new_prefix + key[len(old_prefix) :]
         state_dict[new_key] = state_dict[key]
         del state_dict[key]
+
+
+def _split_tensor(t, sizes):
+    """
+    A simple replacement for torch.split since it's not a view op (yet) on XLA
+    (see https://github.com/pytorch/xla/issues/3330#issuecomment-1042376984)
+    """
+    out = []
+    b = 0
+    for s in sizes:
+        out.append(t[b:b + s])
+        b += s
+    return out
