@@ -164,8 +164,8 @@ def train_mnist(flags, **kwargs):
   model.load_state_dict(state_dict)
 
   accuracy = test_loop_fn(test_device_loader)
-  xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
-      0, test_utils.now(), accuracy))
+  xm.master_print('test end {}, Accuracy={:.2f}'.format(
+      test_utils.now(), accuracy))
   max_accuracy = max(accuracy, max_accuracy)
   test_utils.write_to_summary(
       writer,
