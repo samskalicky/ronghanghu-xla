@@ -198,7 +198,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         # self._param_name_groups = param_name_groups  # not supported in XLA FSDP
 
         # Shard module parameters in place
-        self._dummy_data_placeholder = torch.empty(1, device=params[0].device)
+        self._dummy_data_placeholder = torch.zeros(1, device=xm.xla_device())
         self._shard_parameters_(params_to_shard)
 
         # Make sure all parameters are sharded.

@@ -220,24 +220,20 @@ def train_imagenet():
 
     device = xm.xla_device()
     model = get_model_property("model_fn")().to(device)
-
-    # wrap a few sub-modules (layer1, layer2, layer3, and layer4) in ResNet
-    # with inner FSDP to resemble the ZeRO-3 optimizer
-    def wrap(m):
-        if not FLAGS.use_nested_fsdp:
-            return m
-        return FSDP(
-            m.to(device),
-            reshard_after_forward=FLAGS.reshard_after_forward,
-            flatten_parameters=FLAGS.flatten_parameters,
-            use_all_gather_via_all_reduce=FLAGS.use_all_gather_via_all_reduce,
-        )
-
-    model.layer1 = wrap(model.layer1)
-    model.layer2 = wrap(model.layer2)
-    model.layer3 = wrap(model.layer3)
-    model.layer4 = wrap(model.layer4)
-
+    # Note: you may wrap all, a subset, or none of the child modules with an inner FSDP
+    # - to implement ZeRO-2, wrap none of the child modules
+    # - to implement ZeRO-3, wrap all of the child modules
+    if FLAGS.use_nested_fsdp:
+        # wrap all child modules with inner FSDP (i.e. this is ZeRO-3)
+        for module_name, m in model.named_children():
+            m_fsdp = FSDP(
+                m,
+                reshard_after_forward=FLAGS.reshard_after_forward,
+                flatten_parameters=FLAGS.flatten_parameters,
+                use_all_gather_via_all_reduce=FLAGS.use_all_gather_via_all_reduce,
+            )
+            setattr(model, module_name, m_fsdp)
+    # always wrap the base model with an outer FSDP
     model = FSDP(
         model,
         reshard_after_forward=FLAGS.reshard_after_forward,
