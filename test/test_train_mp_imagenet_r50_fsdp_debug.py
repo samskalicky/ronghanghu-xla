@@ -266,7 +266,7 @@ def train_imagenet():
         model.train()
         xm.master_print(f"training epoch {epoch}")
         for step, (data, target) in enumerate(loader):
-            xm.master_print(f"    running step {step}/{len(loader)}")
+            xm.master_print(f"running epoch {epoch} step {step}/{len(loader)}")
             optimizer.zero_grad()
             if FLAGS.amp:
                 with autocast():
