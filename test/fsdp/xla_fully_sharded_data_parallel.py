@@ -32,6 +32,7 @@ from torch.nn.utils.rnn import PackedSequence
 import torch_xla.core.xla_model as xm
 
 from .xla_flatten_params_wrapper import XlaFlattenParamsWrapper
+from .all_gather_via_all_reduce import all_gather_via_all_reduce
 
 if TYPE_CHECKING:
     from collections import OrderedDict  # noqa: F401
@@ -116,6 +117,10 @@ class XlaFullyShardedDataParallel(nn.Module):
         flatten_parameters (bool, Optional):
             if ``True``, flatten parameters into a single contiguous tensor,
             which improves training speed.
+        use_all_gather_via_all_reduce (bool, Optional):
+            if ``True``, use the PyTorch XLA 1.10 all_gather implementation,
+            which performs all_gather via padding and all_reduce and has lower
+            chances of GRPC errors.
     """
 
     def __init__(
@@ -124,6 +129,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         reshard_after_forward: bool = True,
         flatten_parameters: bool = True,
         execute_sharding_on_init: bool = True,
+        use_all_gather_via_all_reduce = False,
     ):
         init_start = time.time()
         super().__init__()
@@ -134,6 +140,11 @@ class XlaFullyShardedDataParallel(nn.Module):
         self.compute_dtype = torch.float32
         self.buffer_dtype = self.compute_dtype
         self.uncollected_opt_state: Dict[int, Dict] = {}
+        self.use_all_gather_via_all_reduce = use_all_gather_via_all_reduce
+        if use_all_gather_via_all_reduce:
+            self.all_gather_op = all_gather_via_all_reduce
+        else:
+            self.all_gather_op = xm.all_gather
 
         self.gradient_predivide_factor: float = self._get_gradient_predivide_factor(self.world_size)
         self.gradient_postdivide_factor: float = self.world_size / self.gradient_predivide_factor
@@ -844,7 +855,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         for p, p_shard in zip(self.full_params, self.sharded_params):
             if not p._has_full_param:
                 # gather full parameter from shards
-                p_padded = xm.all_gather(p_shard).flatten().detach()
+                p_padded = self.all_gather_op(p_shard).flatten().detach()
                 p.data = p_padded[: p_shard._orig_size.numel()].view(p_shard._orig_size)
                 p._has_full_param = True
         self.has_full_params = True

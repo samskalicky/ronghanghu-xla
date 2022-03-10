@@ -38,6 +38,7 @@ MODEL_OPTS = {
     "--eval_interval": {"type": int, "default": 5},
     "--reshard_after_forward": {"action": "store_true"},
     "--flatten_parameters": {"action": "store_true"},
+    "--use_all_gather_via_all_reduce": {"action": "store_true"},
     # AMP only works with XLA:GPU
     "--amp": {"action": "store_true"},
     # Using zero gradients optimization for AMP
@@ -238,6 +239,7 @@ def train_imagenet():
         model,
         reshard_after_forward=FLAGS.reshard_after_forward,
         flatten_parameters=FLAGS.flatten_parameters,
+        use_all_gather_via_all_reduce=FLAGS.use_all_gather_via_all_reduce,
     )
     xm.rendezvous("FSDP model init completed")
     xm.master_print("FSDP model init completed")
