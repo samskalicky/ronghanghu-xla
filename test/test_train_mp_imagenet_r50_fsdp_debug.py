@@ -2,27 +2,11 @@ import args_parse
 
 
 SUPPORTED_MODELS = [
-    "alexnet",
-    "densenet121",
-    "densenet161",
-    "densenet169",
-    "densenet201",
-    "inception_v3",
-    "resnet101",
-    "resnet152",
     "resnet18",
     "resnet34",
     "resnet50",
-    "squeezenet1_0",
-    "squeezenet1_1",
-    "vgg11",
-    "vgg11_bn",
-    "vgg13",
-    "vgg13_bn",
-    "vgg16",
-    "vgg16_bn",
-    "vgg19",
-    "vgg19_bn",
+    "resnet101",
+    "resnet152",
 ]
 
 MODEL_OPTS = {
@@ -39,6 +23,7 @@ MODEL_OPTS = {
     "--reshard_after_forward": {"action": "store_true"},
     "--flatten_parameters": {"action": "store_true"},
     "--use_all_gather_via_all_reduce": {"action": "store_true"},
+    '--use_nested_fsdp': {'action': 'store_true'},
     # AMP only works with XLA:GPU
     "--amp": {"action": "store_true"},
     # Using zero gradients optimization for AMP
@@ -235,6 +220,24 @@ def train_imagenet():
 
     device = xm.xla_device()
     model = get_model_property("model_fn")().to(device)
+
+    # wrap a few sub-modules (layer1, layer2, layer3, and layer4) in ResNet
+    # with inner FSDP to resemble the ZeRO-3 optimizer
+    def wrap(m):
+        if not FLAGS.use_nested_fsdp:
+            return m
+        return FSDP(
+            m.to(device),
+            reshard_after_forward=FLAGS.reshard_after_forward,
+            flatten_parameters=FLAGS.flatten_parameters,
+            use_all_gather_via_all_reduce=FLAGS.use_all_gather_via_all_reduce,
+        )
+
+    model.layer1 = wrap(model.layer1)
+    model.layer2 = wrap(model.layer2)
+    model.layer3 = wrap(model.layer3)
+    model.layer4 = wrap(model.layer4)
+
     model = FSDP(
         model,
         reshard_after_forward=FLAGS.reshard_after_forward,
