@@ -225,14 +225,17 @@ def train_imagenet():
     # - to implement ZeRO-3, wrap all of the child modules
     if FLAGS.use_nested_fsdp:
         # wrap all child modules with inner FSDP (i.e. this is ZeRO-3)
-        for module_name, m in model.named_children():
+        inner_fsdp_submodule_names = [n for n, _ in model.named_children()]
+        for submodule_name in inner_fsdp_submodule_names:
+            m = getattr(model, submodule_name)
             m_fsdp = FSDP(
                 m,
                 reshard_after_forward=FLAGS.reshard_after_forward,
                 flatten_parameters=FLAGS.flatten_parameters,
                 use_all_gather_via_all_reduce=FLAGS.use_all_gather_via_all_reduce,
             )
-            setattr(model, module_name, m_fsdp)
+            setattr(model, submodule_name, m_fsdp)
+
     # always wrap the base model with an outer FSDP
     model = FSDP(
         model,
