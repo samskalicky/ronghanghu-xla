@@ -24,6 +24,7 @@ MODEL_OPTS = {
     "--flatten_parameters": {"action": "store_true"},
     "--use_all_gather_via_all_reduce": {"action": "store_true"},
     '--use_nested_fsdp': {'action': 'store_true'},
+    '--rng_seed': {"type": int, "default": 42},
     # AMP only works with XLA:GPU
     "--amp": {"action": "store_true"},
     # Using zero gradients optimization for AMP
@@ -216,7 +217,7 @@ def train_imagenet():
     xm.rendezvous("data loading completed")
     xm.master_print("data loading completed")
 
-    torch.manual_seed(42)
+    torch.manual_seed(FLAGS.rng_seed)
 
     device = xm.xla_device()
     model = get_model_property("model_fn")().to(device)
