@@ -10,7 +10,6 @@ from math import inf
 import time
 import traceback
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -34,8 +33,7 @@ import torch_xla.core.xla_model as xm
 from .xla_flatten_params_wrapper import XlaFlattenParamsWrapper
 from .all_gather_via_all_reduce import all_gather_via_all_reduce
 
-if TYPE_CHECKING:
-    from collections import OrderedDict  # noqa: F401
+from collections import OrderedDict
 
 
 class TrainingState(Enum):
@@ -131,6 +129,22 @@ class XlaFullyShardedDataParallel(nn.Module):
         execute_sharding_on_init: bool = True,
         use_all_gather_via_all_reduce = False,
     ):
+        is_forward_defined = (
+            hasattr(module, "forward") and
+            hasattr(module.forward, "__func__") and
+            module.forward.__func__ != torch.nn.Module.forward
+        )
+        if not is_forward_defined:
+            raise Exception(
+                "The module wrapped by FSDP *must define a `forward` method and call it "
+                "during the module's forward pass for FSDP to work correctly.* "
+                "Hence, do not wrap `nn.ModuleList` or `nn.ModuleDict` with FSDP "
+                "(since they don't have `forward` defined), "
+                "and do not perform the forward pass in other ways apart from the `forward` method. "
+                "(i.e. you should directly call the FSDP-wrapped module itself in your code, "
+                "instead of using any of its submodules or its weights)."
+            )
+
         init_start = time.time()
         super().__init__()
         self.rank = xm.get_ordinal()
