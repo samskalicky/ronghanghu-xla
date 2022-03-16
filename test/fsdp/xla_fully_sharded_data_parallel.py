@@ -127,7 +127,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         reshard_after_forward: bool = True,
         flatten_parameters: bool = True,
         execute_sharding_on_init: bool = True,
-        use_all_gather_via_all_reduce = False,
+        use_all_gather_via_all_reduce = True,
     ):
         is_forward_defined = (
             hasattr(module, "forward") and
