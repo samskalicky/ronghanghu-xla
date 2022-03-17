@@ -1,7 +1,12 @@
 import args_parse
 
 MODEL_OPTS = {
-    '--ckpt_path': {'type': str, 'default': "Please specify"},
+    '--flatten_parameters': {'action': 'store_true'},
+    '--use_nested_fsdp': {'action': 'store_true'},
+    '--ckpt_prefix': {'type': str, 'default': '/tmp/mnist-fsdp/final_ckpt'},
+    '--no_ckpt_consolidation': {
+      'dest': 'ckpt_consolidation', 'action': 'store_false'
+    },
 }
 
 FLAGS = args_parse.parse_common_options(
@@ -11,8 +16,7 @@ FLAGS = args_parse.parse_common_options(
     lr=0.01,
     target_accuracy=98.0,
     num_epochs=18,
-    opts=MODEL_OPTS.items(),
-)
+    opts=MODEL_OPTS.items())
 
 import os
 import shutil
@@ -31,7 +35,8 @@ import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.test.test_utils as test_utils
 
-from fsdp.xla_flatten_params_wrapper import XlaFlattenParamsWrapper
+from fsdp.xla_fully_sharded_data_parallel import XlaFullyShardedDataParallel as FSDP
+from fsdp.checkpoint_consolidation import consolidate_xla_fsdp_model_state_dict
 
 
 class MNIST(nn.Module):
@@ -121,15 +126,22 @@ def train_mnist(flags, **kwargs):
 
   device = xm.xla_device()
   model = MNIST().to(device)
-  model = XlaFlattenParamsWrapper(model, param_list=[list(model.parameters())])
-  assert len(list(model.parameters())) == 1
+  fsdp_wrap = lambda m: FSDP(m, flatten_parameters=flags.flatten_parameters)
+  if flags.use_nested_fsdp:
+    # Wrap a few sub-modules (here conv1, conv2, fc1, and fc2) with inner FSDP
+    model.conv1 = fsdp_wrap(model.conv1)
+    model.conv2 = fsdp_wrap(model.conv2)
+    model.fc1 = fsdp_wrap(model.fc1)
+    model.fc2 = fsdp_wrap(model.fc2)
+  model = fsdp_wrap(model)
+
   writer = None
   if xm.is_master_ordinal():
     writer = test_utils.get_summary_writer(flags.logdir)
   optimizer = optim.SGD(model.parameters(), lr=lr, momentum=flags.momentum)
   loss_fn = nn.NLLLoss()
 
-  def train_loop_fn(loader):
+  def train_loop_fn(model, loader):
     tracker = xm.RateTracker()
     model.train()
     for step, (data, target) in enumerate(loader):
@@ -137,7 +149,7 @@ def train_mnist(flags, **kwargs):
       output = model(data)
       loss = loss_fn(output, target)
       loss.backward()
-      xm.optimizer_step(optimizer)
+      optimizer.step()  # do not reduce gradients on sharded params
       tracker.add(flags.batch_size)
       if step % flags.log_steps == 0:
         xm.add_step_closure(
@@ -145,7 +157,7 @@ def train_mnist(flags, **kwargs):
             args=(device, step, loss, tracker, writer),
             run_async=FLAGS.async_closures)
 
-  def test_loop_fn(loader):
+  def test_loop_fn(model, loader):
     total_samples = 0
     correct = 0
     model.eval()
@@ -162,22 +174,51 @@ def train_mnist(flags, **kwargs):
   train_device_loader = pl.MpDeviceLoader(train_loader, device)
   test_device_loader = pl.MpDeviceLoader(test_loader, device)
   accuracy, max_accuracy = 0.0, 0.0
+  for epoch in range(1, flags.num_epochs + 1):
+    xm.master_print('Epoch {} train begin {}'.format(epoch, test_utils.now()))
+    train_loop_fn(model, train_device_loader)
+    xm.master_print('Epoch {} train end {}'.format(epoch, test_utils.now()))
 
-  ckpt_path = flags.ckpt_path
-  state_dict = torch.load(ckpt_path)["model"]
-  model.load_state_dict(state_dict)
+    accuracy = test_loop_fn(model, test_device_loader)
+    xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
+        epoch, test_utils.now(), accuracy))
+    max_accuracy = max(accuracy, max_accuracy)
+    test_utils.write_to_summary(
+        writer,
+        epoch,
+        dict_to_write={'Accuracy/test': accuracy},
+        write_xla_metrics=True)
+    if flags.metrics_debug:
+      xm.master_print(met.metrics_report())
 
-  accuracy = test_loop_fn(test_device_loader)
-  xm.master_print('test end {}, Accuracy={:.2f}'.format(
-      test_utils.now(), accuracy))
-  max_accuracy = max(accuracy, max_accuracy)
-  test_utils.write_to_summary(
-      writer,
-      0,
-      dict_to_write={'Accuracy/test': accuracy},
-      write_xla_metrics=True)
-  if flags.metrics_debug:
-    xm.master_print(met.metrics_report())
+  if flags.ckpt_consolidation:
+    # Note: to run this test, all the model checkpoints needs to be
+    # accessible from the master rank. Set --ckpt_prefix to a shared file
+    # system (e.g. NFS) when running on a TPU pod.
+
+    # Save the final model checkpoint
+    rank = xm.get_ordinal()
+    world_size = xm.xrt_world_size()
+    ckpt_path = f'{flags.ckpt_prefix}_rank-{rank:08d}-of-{world_size:08d}.pth'
+    ckpt = {
+      'model': model.state_dict(),
+      'shard_metadata': model.get_shard_metadata(),
+    }
+    os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+    xm.save(ckpt, ckpt_path, master_only=False)
+    print(f'checkpoint saved to {ckpt_path}\n', end='')
+
+    # Consolidate the sharded model checkpoints and test its accuracy
+    if xm.is_master_ordinal(local=False):
+      consolidate_xla_fsdp_model_state_dict(flags.ckpt_prefix)
+    xm.rendezvous('ckpt_consolidation')
+    model = MNIST().to(device)
+    ckpt_consolidated = torch.load(f'{flags.ckpt_prefix}_consolidated.pth')
+    model.load_state_dict(ckpt_consolidated['model'])
+    accuracy = test_loop_fn(model, test_device_loader)
+    xm.master_print(f'Checkpoint consolidated, Accuracy={accuracy:.2f} '
+      '(note: it can be slightly different from the final training accuracy '
+      'due to non-sync BatchNorm2d in the model)')
 
   test_utils.close_summary_writer(writer)
   xm.master_print('Max Accuracy: {:.2f}%'.format(max_accuracy))

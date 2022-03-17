@@ -110,6 +110,7 @@ def consolidate_xla_fsdp_model_state_dict(
         save_path = ckpt_prefix + "_consolidated.pth"
     torch.save({"model": full_state_dict}, save_path)
     print(f"saved consolidated model to {save_path}")
+    return full_state_dict
 
 
 def main():
