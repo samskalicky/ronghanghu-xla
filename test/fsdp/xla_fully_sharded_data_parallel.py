@@ -1,6 +1,7 @@
 # This file is largely inspired by `fairscale.nn.FullyShardedDataParallel` in
 # https://fairscale.readthedocs.io/en/stable/api/nn/fsdp.html
 
+from collections import OrderedDict
 import contextlib
 from enum import Enum, auto
 import functools
@@ -10,16 +11,7 @@ from math import inf
 import time
 import traceback
 from typing import (
-    Any,
-    Callable,
-    Dict,
-    Generator,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Union,
-    cast,
+    Any, Callable, Dict, Generator, List, Optional, Set, Tuple, Union, cast,
 )
 
 import torch
@@ -31,9 +23,8 @@ from torch.nn.utils.rnn import PackedSequence
 import torch_xla.core.xla_model as xm
 
 from .xla_flatten_params_wrapper import XlaFlattenParamsWrapper
+from .checkpoint_consolidation import consolidate_xla_fsdp_model_checkpoints
 from .all_gather_via_all_reduce import all_gather_via_all_reduce
-
-from collections import OrderedDict
 
 
 class TrainingState(Enum):
@@ -81,8 +72,7 @@ class XlaFullyShardedDataParallel(nn.Module):
 
         The module should be moved to TPU device *before* wrapping it with
         FSDP. For nested FSDP, the inner FSDP modules also need to be on TPU
-        before wrapping. See "test_train_mp_mnist_nested_fsdp.py" for an
-        example implementation.
+        before wrapping.
 
     .. warning::
 
@@ -92,7 +82,7 @@ class XlaFullyShardedDataParallel(nn.Module):
 
     .. warning::
 
-        Please use `optim.step()` instead of `xm.optimizer_step(optim)` for
+        Please use ``optim.step()`` instead of ``xm.optimizer_step(optim)`` for
         optimizer update. The latter averages the gradients across TPUs, which
         is incorrect for FSDP.
 
@@ -101,7 +91,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         When saving checkpoints, the training process on each TPU needs to save
         its own (sharded) model and optimizer state_dict. When resuming, all
         training processes need to load their corresponding (sharded) model and
-        optimizer state_dict. Use `consolidate_xla_fsdp_model_state_dict` to
+        optimizer state_dict. Use ``consolidate_xla_fsdp_model_checkpoints`` to
         build a full model state_dict for the original unwrapped module from
         the sharded model state_dict.
 
@@ -115,10 +105,13 @@ class XlaFullyShardedDataParallel(nn.Module):
         flatten_parameters (bool, Optional):
             if ``True``, flatten parameters into a single contiguous tensor,
             which improves training speed.
+        execute_sharding_on_init (bool, Optional):
+            if ``True``, immediately execute the parameter sharding via
+            `xm.mark_step` to free up the memory of the full parameters.
         use_all_gather_via_all_reduce (bool, Optional):
             if ``True``, use the PyTorch XLA 1.10 all_gather implementation,
-            which performs all_gather via padding and all_reduce and has lower
-            chances of GRPC errors.
+            which performs all_gather via padding and all_reduce and avoids
+            GRPC errors (see https://github.com/pytorch/xla/issues/3423).
     """
 
     def __init__(
@@ -127,7 +120,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         reshard_after_forward: bool = True,
         flatten_parameters: bool = True,
         execute_sharding_on_init: bool = True,
-        use_all_gather_via_all_reduce = True,
+        use_all_gather_via_all_reduce: bool = True,
     ):
         is_forward_defined = (
             hasattr(module, "forward") and
@@ -135,7 +128,7 @@ class XlaFullyShardedDataParallel(nn.Module):
             module.forward.__func__ != torch.nn.Module.forward
         )
         if not is_forward_defined:
-            raise Exception(
+            raise RuntimeError(
                 "The module wrapped by FSDP *must define a `forward` method and call it "
                 "during the module's forward pass for FSDP to work correctly.* "
                 "Hence, do not wrap `nn.ModuleList` or `nn.ModuleDict` with FSDP "
@@ -145,16 +138,11 @@ class XlaFullyShardedDataParallel(nn.Module):
                 "instead of using any of its submodules or its weights)."
             )
 
-        init_start = time.time()
         super().__init__()
         self.rank = xm.get_ordinal()
         self.world_size = xm.xrt_world_size()
         self.reshard_after_forward = self._orig_reshard_after_forward = reshard_after_forward
         self.flatten_parameters = flatten_parameters
-        self.compute_dtype = torch.float32
-        self.buffer_dtype = self.compute_dtype
-        self.uncollected_opt_state: Dict[int, Dict] = {}
-        self.use_all_gather_via_all_reduce = use_all_gather_via_all_reduce
         if use_all_gather_via_all_reduce:
             self.all_gather_op = all_gather_via_all_reduce
         else:
@@ -165,9 +153,6 @@ class XlaFullyShardedDataParallel(nn.Module):
 
         self.numel_padded_per_param: List[int] = []
         self._tstart = time.time()
-
-        # TODO (ronghang): build XLA version of SyncBN and automatically enable it
-        # enable_pytorch_sync_bn(module)
 
         # Only handle params which are not already sharded. This enables
         # sharding individual layers of a Module, with an outer wrapper to
@@ -198,13 +183,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         # Now, in this FSDP wrapper class, we keep a list of to-be-flatten and not-to-be-flatten
         # params for doing sharding, gradient hooks, etc. Note, the ordering of the
         # list matters: flatten params are always in the front.
-        #
-        # The self._num_flatten_params and self._param_name_groups are computed
-        # and kept here to support summon_full_params and shard-to-full weight
-        # consolidation.
         params_to_shard = cast(List[Parameter], self._fsdp_wrapped_module.flat_params) + non_flatten_params
-        # self._num_flatten_params = len(self._fsdp_wrapped_module.flat_params)  # not supported in XLA FSDP
-        # self._param_name_groups = param_name_groups  # not supported in XLA FSDP
 
         # Shard module parameters in place
         self._dummy_data_placeholder = torch.zeros(1, device=xm.xla_device())
@@ -231,16 +210,9 @@ class XlaFullyShardedDataParallel(nn.Module):
         self._pre_backward_hook_has_run = False
 
         if execute_sharding_on_init:
-            # Execute the parameter sharding immediately and free memory
+            # Execute the parameter sharding immediately and free up the memory
             xm.mark_step()
             gc.collect()
-
-        init_end = time.time()
-
-        logging.debug(
-            f"FSDP.__init__(done): total_init_time: {(init_end - init_start): .4f} "
-            f"num_params (sharded): {(sum(p.numel() for p in self.sharded_params))}"
-        )
 
     def _get_gradient_predivide_factor(self, world_size: int) -> float:
         factor: int = 1
@@ -750,9 +722,6 @@ class XlaFullyShardedDataParallel(nn.Module):
             # bandwidth but uses more TPU memory.
             self._free_full_params([param])
 
-        # Switch to FP32 shard after backward.
-        # self._use_fp32_param_shard([param])  # not needed in XLA FSDP
-
         if not self._require_backward_grad_sync:
             return
 
@@ -900,8 +869,24 @@ class XlaFullyShardedDataParallel(nn.Module):
                 traceback.print_stack()
             raise ValueError(msg)
 
+    def get_original_names_and_sharded_parameters(self):
+        """Get the sharded parameters along with their original names."""
+        orig_named_parameters = []
+        for module_name, m in self.named_modules():  # includes self
+            if isinstance(m, XlaFullyShardedDataParallel):
+                prefix = "" if module_name == "" else module_name + "."
+                for p in self.sharded_params:
+                    n = prefix + p._orig_name.replace("_fsdp_wrapped_module.", "").replace("_fpw_module.", "")
+                    orig_named_parameters.append((n, p))
+
+        return orig_named_parameters
+
     def get_shard_metadata(self):
-        # Get the shard metadata for checkpoint consolidation
+        """
+        Get the shard metadata to consolidate the sharded model checkpoints.
+        The output from this method should be saved in a checkpoint file and
+        used in ``consolidate_xla_fsdp_model_checkpoints``.
+        """
         shard_info = {}
         flatten_info = {}
         for module_name, m in self.named_modules():  # includes self

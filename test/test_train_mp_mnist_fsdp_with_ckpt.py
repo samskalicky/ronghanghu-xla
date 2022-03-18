@@ -36,7 +36,7 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.test.test_utils as test_utils
 
 from fsdp.xla_fully_sharded_data_parallel import XlaFullyShardedDataParallel as FSDP
-from fsdp.checkpoint_consolidation import consolidate_xla_fsdp_model_state_dict
+from fsdp.checkpoint_consolidation import consolidate_xla_fsdp_model_checkpoints
 
 
 class MNIST(nn.Module):
@@ -211,7 +211,7 @@ def train_mnist(flags, **kwargs):
 
     # Consolidate the sharded model checkpoints and test its accuracy
     if xm.is_master_ordinal(local=False):
-      consolidate_xla_fsdp_model_state_dict(flags.ckpt_prefix)
+      consolidate_xla_fsdp_model_checkpoints(flags.ckpt_prefix)
     xm.rendezvous('ckpt_consolidation')
     model = MNIST().to(device)
     ckpt_consolidated = torch.load(f'{flags.ckpt_prefix}_consolidated.pth')

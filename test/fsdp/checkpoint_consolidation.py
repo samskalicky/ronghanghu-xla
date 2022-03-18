@@ -83,7 +83,7 @@ def consolidate_and_unflatten(checkpoints):
     return full_state_dict
 
 
-def consolidate_xla_fsdp_model_state_dict(
+def consolidate_xla_fsdp_model_checkpoints(
     ckpt_prefix, ckpt_suffix="_rank-*-of-*.pth", save_path=""
 ):
     ckpt_path_pattern = ckpt_prefix + ckpt_suffix
@@ -140,7 +140,7 @@ def main():
         ),
     )
     args = parser.parse_args()
-    consolidate_xla_fsdp_model_state_dict(
+    consolidate_xla_fsdp_model_checkpoints(
         args.ckpt_prefix, args.ckpt_suffix, args.save_path
     )
 
