@@ -24,20 +24,20 @@ MODEL_OPTS = {
     '--lr_scheduler_divisor': {
         'type': int,
     },
-    '--num_warmup_epochs': {
-        'type': int,
-    },
     '--test_only_at_end': {
         'action': 'store_true',
     },
-    '--ckpt_dir': {
-        'type': str, "default": "Please specify",
-    },
-    '--ckpt_interval': {
-        'type': int, "default": 5,
+    '--num_warmup_epochs': {
+        'type': float, 'default': 0.9,
     },
     '--eval_interval': {
-        'type': int, "default": 5,
+        'type': int, 'default': 5,
+    },
+    '--flatten_parameters': {
+      'action': 'store_true',
+    },
+    '--use_nested_fsdp': {
+      'action': 'store_true',
     },
     # AMP only works with XLA:GPU
     '--amp': {
@@ -79,6 +79,8 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.test.test_utils as test_utils
 from torch_xla.amp import autocast, GradScaler
 
+from fsdp.xla_fully_sharded_data_parallel import XlaFullyShardedDataParallel as FSDP
+
 DEFAULT_KWARGS = dict(
     batch_size=128,
     test_set_batch_size=64,
@@ -93,10 +95,9 @@ MODEL_SPECIFIC_DEFAULTS = {
     'resnet50':
         dict(
             DEFAULT_KWARGS, **{
-                'lr': 0.1,
-                'lr_scheduler_divide_every_n_epochs': 30,
-                'lr_scheduler_divisor': 10,
-                'num_warmup_epochs': 5,
+                'lr': 0.5,
+                'lr_scheduler_divide_every_n_epochs': 20,
+                'lr_scheduler_divisor': 5,
             })
 }
 
@@ -205,6 +206,20 @@ def train_imagenet():
 
   device = xm.xla_device()
   model = get_model_property('model_fn')().to(device)
+  # Wrap the model with FSDP
+  # You may wrap all, a subset, or none of the sub-modules with inner FSDPs
+  # - to implement ZeRO-2, wrap none of the sub-modules
+  # - to implement ZeRO-3, wrap all of the sub-modules (nested FSDP)
+  # You can choose to wrap inner FSDP at different granularity (e.g. wrapping
+  # sub-modules at each resnet stage or each residual block or each conv layer)
+  fsdp_wrap = lambda m: FSDP(m, flatten_parameters=FLAGS.flatten_parameters)
+  if FLAGS.use_nested_fsdp:
+    # here we apply inner FSDP at the level child modules, which corresponds to
+    # different resnet stages (i.e. Stage 1 to 5)
+    for submodule_name in [n for n, _ in model.named_children()]:
+        m_fsdp = fsdp_wrap(getattr(model, submodule_name))
+        setattr(model, submodule_name, m_fsdp)
+  model = fsdp_wrap(model)  # always wrap the base model with an outer FSDP
   writer = None
   if xm.is_master_ordinal():
     writer = test_utils.get_summary_writer(FLAGS.logdir)
@@ -220,7 +235,7 @@ def train_imagenet():
       num_steps_per_epoch=num_training_steps_per_epoch,
       divide_every_n_epochs=FLAGS.lr_scheduler_divide_every_n_epochs,
       divisor=FLAGS.lr_scheduler_divisor,
-      num_warmup_epochs=5,
+      num_warmup_epochs=FLAGS.num_warmup_epochs,
       summary_writer=writer)
   loss_fn = nn.CrossEntropyLoss()
   if FLAGS.amp:
@@ -237,15 +252,13 @@ def train_imagenet():
           loss = loss_fn(output, target)
 
         scaler.scale(loss).backward()
-        gradients = xm._fetch_gradients(optimizer)
-        xm.all_reduce('sum', gradients, scale=1.0 / xm.xrt_world_size())
         scaler.step(optimizer)
         scaler.update()
       else:
         output = model(data)
         loss = loss_fn(output, target)
         loss.backward()
-        xm.optimizer_step(optimizer)
+        optimizer.step()  # do not reduce gradients on sharded params
 
       tracker.add(FLAGS.batch_size)
       if lr_scheduler:
@@ -272,13 +285,12 @@ def train_imagenet():
   train_device_loader = pl.MpDeviceLoader(train_loader, device)
   test_device_loader = pl.MpDeviceLoader(test_loader, device)
   accuracy, max_accuracy = 0.0, 0.0
-  os.makedirs(FLAGS.ckpt_dir, exist_ok=True)
   for epoch in range(1, FLAGS.num_epochs + 1):
     xm.master_print('Epoch {} train begin {}'.format(epoch, test_utils.now()))
     train_loop_fn(train_device_loader, epoch)
     xm.master_print('Epoch {} train end {}'.format(epoch, test_utils.now()))
     run_eval = (
-        (epoch % FLAGS.eval_interval == 0 and not FLAGS.test_only_at_end) or
+        (not FLAGS.test_only_at_end and epoch % FLAGS.eval_interval == 0) or
         epoch == FLAGS.num_epochs)
     if run_eval:
       accuracy = test_loop_fn(test_device_loader, epoch)
@@ -290,11 +302,6 @@ def train_imagenet():
           epoch,
           dict_to_write={'Accuracy/test': accuracy},
           write_xla_metrics=True)
-    if epoch % FLAGS.ckpt_interval == 0 or epoch == FLAGS.num_epochs:
-      ckpt = {"model": model.state_dict(), "optimizer": optimizer.state_dict()}
-      ckpt_file = os.path.join(FLAGS.ckpt_dir, f"checkpoint-{epoch}.pth")
-      xm.save(ckpt, ckpt_file, global_master=True)
-      xm.master_print(f"checkpoint saved to {ckpt_file}")
     if FLAGS.metrics_debug:
       xm.master_print(met.metrics_report())
 

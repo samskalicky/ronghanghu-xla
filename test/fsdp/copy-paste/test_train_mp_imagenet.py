@@ -24,29 +24,8 @@ MODEL_OPTS = {
     '--lr_scheduler_divisor': {
         'type': int,
     },
-    '--num_warmup_epochs': {
-        'type': int,
-    },
     '--test_only_at_end': {
         'action': 'store_true',
-    },
-    '--ckpt_dir': {
-        'type': str, "default": "Please specify",
-    },
-    '--ckpt_interval': {
-        'type': int, "default": 5,
-    },
-    '--eval_interval': {
-        'type': int, "default": 5,
-    },
-    '--reshard_after_forward': {
-      'action': 'store_true',
-    },
-    '--flatten_parameters': {
-      'action': 'store_true',
-    },
-    "--use_all_gather_via_all_reduce": {
-      "action": "store_true",
     },
     # AMP only works with XLA:GPU
     '--amp': {
@@ -70,7 +49,6 @@ FLAGS = args_parse.parse_common_options(
 )
 
 import os
-import sys
 import schedulers
 import numpy as np
 import torch
@@ -88,8 +66,6 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.test.test_utils as test_utils
 from torch_xla.amp import autocast, GradScaler
 
-from fsdp.xla_fully_sharded_data_parallel import XlaFullyShardedDataParallel as FSDP
-
 DEFAULT_KWARGS = dict(
     batch_size=128,
     test_set_batch_size=64,
@@ -104,10 +80,10 @@ MODEL_SPECIFIC_DEFAULTS = {
     'resnet50':
         dict(
             DEFAULT_KWARGS, **{
-                'lr': 0.1,
-                'lr_scheduler_divide_every_n_epochs': 30,
-                'lr_scheduler_divisor': 10,
-                'num_warmup_epochs': 5,
+                'lr': 0.5,
+                'lr_scheduler_divide_every_n_epochs': 20,
+                'lr_scheduler_divisor': 5,
+                'lr_scheduler_type': 'WarmupAndExponentialDecayScheduler',
             })
 }
 
@@ -201,27 +177,19 @@ def train_imagenet():
         sampler=train_sampler,
         drop_last=FLAGS.drop_last,
         shuffle=False if train_sampler else True,
-        num_workers=FLAGS.num_workers,
-        persistent_workers=True)
+        num_workers=FLAGS.num_workers)
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=FLAGS.test_set_batch_size,
         sampler=test_sampler,
         drop_last=FLAGS.drop_last,
         shuffle=False,
-        num_workers=FLAGS.num_workers,
-        persistent_workers=True)
+        num_workers=FLAGS.num_workers)
 
   torch.manual_seed(42)
 
   device = xm.xla_device()
   model = get_model_property('model_fn')().to(device)
-  model = FSDP(
-    model,
-    reshard_after_forward=FLAGS.reshard_after_forward,
-    flatten_parameters=FLAGS.flatten_parameters,
-    use_all_gather_via_all_reduce=FLAGS.use_all_gather_via_all_reduce,
-  )
   writer = None
   if xm.is_master_ordinal():
     writer = test_utils.get_summary_writer(FLAGS.logdir)
@@ -232,12 +200,13 @@ def train_imagenet():
       weight_decay=1e-4)
   num_training_steps_per_epoch = train_dataset_len // (
       FLAGS.batch_size * xm.xrt_world_size())
-  lr_scheduler = schedulers.WarmupAndExponentialDecayScheduler(
+  lr_scheduler = schedulers.wrap_optimizer_with_scheduler(
       optimizer,
+      scheduler_type=getattr(FLAGS, 'lr_scheduler_type', None),
+      scheduler_divisor=getattr(FLAGS, 'lr_scheduler_divisor', None),
+      scheduler_divide_every_n_epochs=getattr(
+          FLAGS, 'lr_scheduler_divide_every_n_epochs', None),
       num_steps_per_epoch=num_training_steps_per_epoch,
-      divide_every_n_epochs=FLAGS.lr_scheduler_divide_every_n_epochs,
-      divisor=FLAGS.lr_scheduler_divisor,
-      num_warmup_epochs=5,
       summary_writer=writer)
   loss_fn = nn.CrossEntropyLoss()
   if FLAGS.amp:
@@ -254,15 +223,15 @@ def train_imagenet():
           loss = loss_fn(output, target)
 
         scaler.scale(loss).backward()
-        # do not reduce the gradients (since we are using sharded params)
+        gradients = xm._fetch_gradients(optimizer)
+        xm.all_reduce('sum', gradients, scale=1.0 / xm.xrt_world_size())
         scaler.step(optimizer)
         scaler.update()
       else:
         output = model(data)
         loss = loss_fn(output, target)
         loss.backward()
-        # do not reduce the gradients (since we are using sharded params)
-        optimizer.step()
+        xm.optimizer_step(optimizer)
 
       tracker.add(FLAGS.batch_size)
       if lr_scheduler:
@@ -289,15 +258,11 @@ def train_imagenet():
   train_device_loader = pl.MpDeviceLoader(train_loader, device)
   test_device_loader = pl.MpDeviceLoader(test_loader, device)
   accuracy, max_accuracy = 0.0, 0.0
-  os.makedirs(FLAGS.ckpt_dir, exist_ok=True)
   for epoch in range(1, FLAGS.num_epochs + 1):
     xm.master_print('Epoch {} train begin {}'.format(epoch, test_utils.now()))
     train_loop_fn(train_device_loader, epoch)
     xm.master_print('Epoch {} train end {}'.format(epoch, test_utils.now()))
-    run_eval = (
-        (epoch % FLAGS.eval_interval == 0 and not FLAGS.test_only_at_end) or
-        epoch == FLAGS.num_epochs)
-    if run_eval:
+    if not FLAGS.test_only_at_end or epoch == FLAGS.num_epochs:
       accuracy = test_loop_fn(test_device_loader, epoch)
       xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
           epoch, test_utils.now(), accuracy))
@@ -307,20 +272,6 @@ def train_imagenet():
           epoch,
           dict_to_write={'Accuracy/test': accuracy},
           write_xla_metrics=True)
-    if epoch % FLAGS.ckpt_interval == 0 or epoch == FLAGS.num_epochs:
-      rank = xm.get_ordinal()
-      world_size = xm.xrt_world_size()
-      ckpt = {
-        "model": model.state_dict(),
-        "shard_metadata": model.get_shard_metadata(),
-        "optimizer": optimizer.state_dict(),
-      }
-      ckpt_file = os.path.join(
-        FLAGS.ckpt_dir,
-        f"checkpoint-{epoch}_rank-{rank:08d}-of-{world_size:08d}.pth"
-      )
-      xm.save(ckpt, ckpt_file, master_only=False)
-      xm.master_print(f"checkpoint saved to {ckpt_file}")
     if FLAGS.metrics_debug:
       xm.master_print(met.metrics_report())
 

@@ -126,14 +126,15 @@ def train_mnist(flags, **kwargs):
 
   device = xm.xla_device()
   model = MNIST().to(device)
+  # Wrap the model with FSDP
   fsdp_wrap = lambda m: FSDP(m, flatten_parameters=flags.flatten_parameters)
   if flags.use_nested_fsdp:
-    # Wrap a few sub-modules (here conv1, conv2, fc1, and fc2) with inner FSDP
+    # Wrap a few sub-modules with inner FSDP (i.e. ZeRO-3 or nested FSDP)
     model.conv1 = fsdp_wrap(model.conv1)
     model.conv2 = fsdp_wrap(model.conv2)
     model.fc1 = fsdp_wrap(model.fc1)
     model.fc2 = fsdp_wrap(model.fc2)
-  model = fsdp_wrap(model)
+  model = fsdp_wrap(model)  # always wrap the base model with an outer FSDP
 
   writer = None
   if xm.is_master_ordinal():
