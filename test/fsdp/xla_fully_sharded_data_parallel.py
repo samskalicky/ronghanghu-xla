@@ -184,13 +184,8 @@ class XlaFullyShardedDataParallel(nn.Module):
             to_be_flatten_params: List[List[Parameter]] = [params]
             non_flatten_params = []
         else:
-            # In XLA FSDP, we wrap all parameters with XlaFlattenParamsWrapper
-            # even if `flatten_parameters` is False. In this case each param
-            # gets its own flatten group (so the flattening has no practical
-            # effect on the param size or numbers, but allows us to get around
-            # the slicing issue in https://github.com/pytorch/xla/issues/3330)
-            to_be_flatten_params: List[List[Parameter]] = [[p] for p in params]
-            non_flatten_params = []
+            to_be_flatten_params: List[List[Parameter]] = [[]]
+            non_flatten_params = params
         del param_names
 
         self._fsdp_wrapped_module: nn.Module = XlaFlattenParamsWrapper(
@@ -387,12 +382,14 @@ class XlaFullyShardedDataParallel(nn.Module):
 
         # deregister the full parameters (so that they won't appear in
         # `parameters()` of the modules)
-        for p, (_, m, n) in zip(self.full_params, self.full_param_infos):
+        for _, m, n in self.full_param_infos:
             assert n in m._parameters
-            m._parameters.pop(n)
-        for (_, _, m, n, shared_m, shared_n) in self.shared_full_param_infos:
+            p = m._parameters.pop(n)
+            object.__setattr__(m, n, p)
+        for _, _, m, n, shared_m, shared_n in self.shared_full_param_infos:
             assert n in m._parameters
-            m._parameters.pop(n)
+            p = m._parameters.pop(n)
+            object.__setattr__(m, n, p)
 
         # allocate and register new sharded parameters
         self.numel_padded_per_param = []
@@ -771,7 +768,7 @@ class XlaFullyShardedDataParallel(nn.Module):
         grad = param.grad.data
         # Clear grad on the tensor, so any repeated gradient computations do not interfere with this reduction.
         param.grad = None
-        grad_flat = _flatten_and_pad_to_chunks(grad, self.world_size)
+        grad_flat = _flatten_and_pad_to_world_size(grad, self.world_size)
         reduced_grad = xm.reduce_scatter(
             xm.REDUCE_SUM, grad_flat, scale=1.0, scatter_dim=0, shard_count=self.world_size
         )
@@ -949,11 +946,12 @@ class XlaFullyShardedDataParallel(nn.Module):
             )
 
 
-def _flatten_and_pad_to_chunks(tensor: torch.Tensor, world_size: int) -> torch.Tensor:
+def _flatten_and_pad_to_world_size(tensor: torch.Tensor, world_size: int) -> torch.Tensor:
     """Flatten and pad a tensor to a given world size (for reduce-scatter)."""
+    tensor = tensor.flatten()
     if tensor.numel() % world_size != 0:
         pad_size = world_size - tensor.numel() % world_size
-        tensor = F.pad(tensor.flatten(), [0, pad_size])
+        tensor = F.pad(tensor, [0, pad_size])
 
     return tensor
 
