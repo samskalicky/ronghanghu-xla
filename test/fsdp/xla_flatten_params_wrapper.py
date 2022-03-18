@@ -1,11 +1,12 @@
-# This file is mostly copy-pasted from
+# This file is mostly copy-pasted (with a few changes) from
+# ``fairscale.nn.misc.FlattenParamsWrapper`` in
 # https://github.com/facebookresearch/fairscale/blob/main/fairscale/nn/misc/flatten_params_wrapper.py
 
+from collections import OrderedDict
 from contextlib import contextmanager
 from itertools import chain
 import typing
 from typing import (
-    TYPE_CHECKING,
     Any,
     Dict,
     Generator,
@@ -24,9 +25,6 @@ from typing import (
 import torch
 from torch import Tensor
 import torch.nn as nn
-
-if TYPE_CHECKING:
-    from collections import OrderedDict  # noqa: F401
 
 
 class FlatParameter(nn.Parameter):
@@ -113,7 +111,8 @@ ParamGroups = Optional[Union[List[List[nn.Parameter]], List[nn.Parameter]]]
 
 class XlaFlattenParamsWrapper(nn.Module):
     """
-    A wrapper for transparently flattening a Module's parameters.
+    A wrapper for transparently flattening a Module's parameters. The implementation
+    is mostly copy-pasted from ``fairscale.nn.misc.FlattenParamsWrapper``.
 
     Compared to the original implementation [1], this version:
     - removes tracing
@@ -536,7 +535,7 @@ def replace_by_prefix_(
 def _split_tensor(t, sizes):
     """
     A simple replacement for torch.split since it's not a view op (yet) on XLA
-    (see https://github.com/pytorch/xla/issues/3330#issuecomment-1042376984)
+    (see https://github.com/pytorch/xla/issues/3330#issuecomment-1042376984).
     """
     out = []
     b = 0

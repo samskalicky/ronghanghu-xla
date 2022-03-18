@@ -1,5 +1,6 @@
-# This file is largely inspired by `fairscale.nn.FullyShardedDataParallel` in
-# https://fairscale.readthedocs.io/en/stable/api/nn/fsdp.html
+# This file is largely inspired by and mostly follows the structure of
+# ``fairscale.nn.FullyShardedDataParallel`` in
+# https://github.com/facebookresearch/fairscale/blob/main/fairscale/nn/data_parallel/fully_sharded_data_parallel.py
 
 from collections import OrderedDict
 import contextlib
@@ -49,8 +50,11 @@ class TrainingState(Enum):
 class XlaFullyShardedDataParallel(nn.Module):
     """
     A wrapper for sharding Module parameters across data parallel workers in
-    PyTorch XLA. This is similar to `fairscale.nn.FullyShardedDataParallel`.
-    XlaFullyShardedDataParallel is commonly shorten to FSDP.
+    PyTorch XLA. XlaFullyShardedDataParallel is commonly shorten to FSDP.
+
+    The implementation of this class is largely inspired by and mostly follows
+    the structure of ``fairscale.nn.FullyShardedDataParallel`` in
+    https://fairscale.readthedocs.io/en/stable/api/nn/fsdp.html.
 
     Pseudo-code usage::
 
@@ -109,9 +113,9 @@ class XlaFullyShardedDataParallel(nn.Module):
             if ``True``, immediately execute the parameter sharding via
             `xm.mark_step` to free up the memory of the full parameters.
         use_all_gather_via_all_reduce (bool, Optional):
-            if ``True``, use the PyTorch XLA 1.10 all_gather implementation,
+            if ``True``, use PyTorch XLA 1.10's all_gather implementation,
             which performs all_gather via padding and all_reduce and avoids
-            GRPC errors (see https://github.com/pytorch/xla/issues/3423).
+            the GRPC error (see https://github.com/pytorch/xla/issues/3423).
     """
 
     def __init__(
@@ -173,6 +177,9 @@ class XlaFullyShardedDataParallel(nn.Module):
             non_flatten_params = params
         del param_names
 
+        # Here, we don't automatically unflatten XlaFlattenParamsWrapper's state dict
+        # to avoid overhead on XLA devices. Use ``get_shard_metadata`` to save parameter info
+        # ``consolidate_xla_fsdp_model_checkpoints`` to consolidate the sharded checkpoints.
         self._fsdp_wrapped_module: nn.Module = XlaFlattenParamsWrapper(
             module,
             param_list=to_be_flatten_params,
@@ -186,7 +193,6 @@ class XlaFullyShardedDataParallel(nn.Module):
         params_to_shard = cast(List[Parameter], self._fsdp_wrapped_module.flat_params) + non_flatten_params
 
         # Shard module parameters in place
-        self._dummy_data_placeholder = torch.zeros(1, device=xm.xla_device())
         self._shard_parameters_(params_to_shard)
 
         # Make sure all parameters are sharded.
@@ -321,9 +327,19 @@ class XlaFullyShardedDataParallel(nn.Module):
         The optimizer will see only a single slice of parameters and will thus
         allocate less memory for optimizer state, avoiding redundancy across
         data parallel workers.
+
+        Note: this method is implemented in a different manner from
+        ``fairscale.nn.FullyShardedDataParallel``. Here we delete the original
+        module parameters and create new sharded parameter tensors (instead of
+        making sharded tensors an attribute of the original parameters). This
+        make it easier to handle things (e.g. freeing parameters) on XLA.
         """
-        # Here we implement it in a different manner from the fairscale FSDP
-        # We delete the original module parameters and create the sharded ones
+        if len(params_to_shard) > 0:
+            # When freeing the full parameters, we point their `.data` to this placeholder
+            # (so that the XLA compiler can reuse the memory storage).
+            self._dummy_data_placeholder = torch.zeros(1, device=params_to_shard[0].device)
+
+        # get the module names of each full parameter to shard
         params_to_shard_set = set(params_to_shard)
         assert len(params_to_shard_set) == len(params_to_shard), \
             "params_to_shard should not have dups"
@@ -352,8 +368,9 @@ class XlaFullyShardedDataParallel(nn.Module):
         self.full_param_infos = full_param_infos
         self.shared_full_param_infos = shared_full_param_infos
 
-        # deregister the full parameters (so that they won't appear in
-        # `parameters()` of the modules)
+        # deregister the full parameter tensors from their modules (so that they won't
+        # appear in the FSDP model's `parameters()` or `named_parameters()` outputs;
+        # only the sharded parameters should appear in the FSDP model's `parameters()`)
         for _, m, n in self.full_param_infos:
             assert n in m._parameters
             p = m._parameters.pop(n)
@@ -379,7 +396,8 @@ class XlaFullyShardedDataParallel(nn.Module):
             self.numel_padded_per_param.append(num_padded)
             self.sharded_params.append(p_shard)
             p._sharded_param = p_shard  # add a handle to the sharded parameter
-            # free the original full parameter
+            # Free the full parameter storage (here we free its `.data`) but keep the tensor itself
+            # for auto-grad tracing (like `torch.autograd.Variable` before the tensor-variable merge).
             p.data = self._dummy_data_placeholder
             p._has_full_param = False
 
@@ -601,25 +619,7 @@ class XlaFullyShardedDataParallel(nn.Module):
 
         def _register_hook(t: torch.Tensor) -> torch.Tensor:
             # We don't register the pre_backward hook on the same tensor that has been
-            # returned from an inner FSDP, unless it is the first one. This does
-            # not cover all problematic cases though. A tensor not from an inner
-            # FSDP can cause problems too:
-            # ```
-            #   x = layer1(input)
-            #   state = [x]  # better change to x.detach(), not fixed by the following if-condition
-            #   x = inner_fsdp_module_layer2(x)
-            #   state.append(x)  # better change to x.detach(), but fixed by the following if-condition
-            #   x = layer3(x)
-            #   return x, state
-            # ```
-            # The tensors in `state`, if not detached, can be registered with
-            # backward hooks (in addition to the `x` on the last line). In that case,
-            # pre-backward hook can fire multiple times in the order that causes
-            # the outer FSDP to crash.
-            #
-            # The best practice is for modules to be wrapped by FSDP to return 1 and only
-            # 1 tensor to be used for backward. All other tensors returned should be
-            # detached.
+            # returned from an inner FSDP, unless it is the first one.
             nonlocal _registered
             assert self._output_pre_backward_hook_registered is not None
             if t.requires_grad and (_registered == 0 or id(t) not in self._output_pre_backward_hook_registered):
@@ -650,18 +650,6 @@ class XlaFullyShardedDataParallel(nn.Module):
         multiple times. (could lead to dimension too small)
         3. If it fires once but too early or doesn't fire, we leave gradients
         unsharded. (could lead to dimension too large)
-
-        Due to multiple-pass forward, this function can be called on
-        the same parameter multiple times in a single forward pass. If we register
-        the hook multiple time, we end up getting called multiple times. We
-        could try to get a new hook every time and delete the previous one
-        registered. However, due to *unknown reason* (I have debugged it for
-        a long time!), in mixed precision mode, we get two different ``grad_acc``
-        objects below during different calls of this function (in the same
-        forward pass). If we keep the last one, the hook end up firing too
-        early. In full precision mode, we luckily get the *same* ``grad_acc``
-        object, so deleting and re-registering still ensured the hook fire
-        once after all gradients are generated.
 
         Empirically, keep the first hook register per forward pass seems to
         work the best. We do need to remove the hook at the end of the
@@ -729,11 +717,7 @@ class XlaFullyShardedDataParallel(nn.Module):
             # Average grad by world_size for consistency with PyTorch DDP.
             param.grad.data.div_(self.gradient_predivide_factor)
 
-        assert hasattr(param, "_has_full_param")
-        # Save the unsharded grad for reduction. We will asynchronously accumulate the reduced gradient into
-        # sharded param's .grad. If this FSDP module was called multiple times it's possible that multiple
-        # gradient reductions will happen in an undefined order. But addition commutes, so this order doesn't
-        # matter, neglecting rounding.
+        # Shard the gradients with `reduce_scatter`.
         grad = param.grad.data
         # Clear grad on the tensor, so any repeated gradient computations do not interfere with this reduction.
         param.grad = None
@@ -745,9 +729,9 @@ class XlaFullyShardedDataParallel(nn.Module):
             # Average grad by world_size for consistency with PyTorch DDP.
             reduced_grad.data.div_(self.gradient_postdivide_factor)
 
+        # Accumulate into the gradient shard.
         assert hasattr(param, "_sharded_param")
         p_shard = param._sharded_param
-        # Accumulate into the gradient shard.
         if p_shard.grad is None:
             p_shard.grad = reduced_grad.data
         else:
@@ -870,7 +854,10 @@ class XlaFullyShardedDataParallel(nn.Module):
             raise ValueError(msg)
 
     def get_original_names_and_sharded_parameters(self):
-        """Get the sharded parameters along with their original names."""
+        """
+        Get the sharded parameters along with their original names. Its output is similar to
+        ``named_parameters`` but contains sharded (and flattened) parameters.
+        """
         orig_named_parameters = []
         for module_name, m in self.named_modules():  # includes self
             if isinstance(m, XlaFullyShardedDataParallel):

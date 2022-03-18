@@ -41,7 +41,7 @@ def _unflatten_param(p, metadata, prefix):
     return full_params, full_names
 
 
-def consolidate_and_unflatten(checkpoints):
+def consolidate_and_unflatten_state_dict(checkpoints):
     full_state_dict = OrderedDict()
 
     # consolidate the sharded parameters
@@ -84,7 +84,7 @@ def consolidate_and_unflatten(checkpoints):
 
 
 def consolidate_xla_fsdp_model_checkpoints(
-    ckpt_prefix, ckpt_suffix="_rank-*-of-*.pth", save_path=""
+    ckpt_prefix, ckpt_suffix="_rank-*-of-*.pth", save_path="", save_model=True
 ):
     ckpt_path_pattern = ckpt_prefix + ckpt_suffix
     ckpt_paths = glob(ckpt_path_pattern)
@@ -108,12 +108,15 @@ def consolidate_xla_fsdp_model_checkpoints(
             f"Please check if you have missing or unexpected files in {ckpt_path_pattern}."
         )
 
-    full_state_dict = consolidate_and_unflatten(checkpoints)
-    if save_path == "":
-        save_path = ckpt_prefix + "_consolidated.pth"
-    torch.save({"model": full_state_dict}, save_path)
-    print(f"saved consolidated model to {save_path}")
-    return full_state_dict
+    full_state_dict = consolidate_and_unflatten_state_dict(checkpoints)
+    if save_model:
+        if not save_path:
+            save_path = ckpt_prefix + "_consolidated.pth"
+        torch.save({"model": full_state_dict}, save_path)
+        print(f"saved consolidated model to {save_path}")
+    else:
+        save_path = None
+    return full_state_dict, save_path
 
 
 def main():
