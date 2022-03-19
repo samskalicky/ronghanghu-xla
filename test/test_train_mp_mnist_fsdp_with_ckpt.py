@@ -1,11 +1,19 @@
 import args_parse
 
 MODEL_OPTS = {
-    '--flatten_parameters': {'action': 'store_true'},
-    '--use_nested_fsdp': {'action': 'store_true'},
-    '--ckpt_prefix': {'type': str, 'default': '/tmp/mnist-fsdp/final_ckpt'},
+    '--flatten_parameters': {
+        'action': 'store_true'
+    },
+    '--use_nested_fsdp': {
+        'action': 'store_true'
+    },
+    '--ckpt_prefix': {
+        'type': str,
+        'default': '/tmp/mnist-fsdp/final_ckpt'
+    },
     '--no_ckpt_consolidation': {
-      'dest': 'ckpt_consolidation', 'action': 'store_false'
+        'dest': 'ckpt_consolidation',
+        'action': 'store_false'
     },
 }
 
@@ -36,8 +44,8 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.test.test_utils as test_utils
 
 from fsdp import (
-  XlaFullyShardedDataParallel as FSDP,
-  consolidate_sharded_model_checkpoints,
+    XlaFullyShardedDataParallel as FSDP,
+    consolidate_sharded_model_checkpoints,
 )
 
 
@@ -205,8 +213,8 @@ def train_mnist(flags, **kwargs):
     world_size = xm.xrt_world_size()
     ckpt_path = f'{flags.ckpt_prefix}_rank-{rank:08d}-of-{world_size:08d}.pth'
     ckpt = {
-      'model': model.state_dict(),
-      'shard_metadata': model.get_shard_metadata(),
+        'model': model.state_dict(),
+        'shard_metadata': model.get_shard_metadata(),
     }
     os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
     xm.save(ckpt, ckpt_path, master_only=False)
@@ -220,9 +228,10 @@ def train_mnist(flags, **kwargs):
     ckpt_consolidated = torch.load(f'{flags.ckpt_prefix}_consolidated.pth')
     model.load_state_dict(ckpt_consolidated['model'])
     accuracy = test_loop_fn(model, test_device_loader)
-    xm.master_print(f'Checkpoint consolidated, Accuracy={accuracy:.2f} '
-      '(note: it can be slightly different from the final training accuracy '
-      'due to non-sync BatchNorm2d in the model)')
+    xm.master_print(
+        f'Checkpoint consolidated, Accuracy={accuracy:.2f} '
+        '(note: it can be slightly different from the final training accuracy '
+        'due to non-sync BatchNorm2d in the model)')
 
   test_utils.close_summary_writer(writer)
   xm.master_print('Max Accuracy: {:.2f}%'.format(max_accuracy))

@@ -28,16 +28,18 @@ MODEL_OPTS = {
         'action': 'store_true',
     },
     '--num_warmup_epochs': {
-        'type': float, 'default': 0.9,
+        'type': float,
+        'default': 0.9,
     },
     '--eval_interval': {
-        'type': int, 'default': 5,
+        'type': int,
+        'default': 5,
     },
     '--flatten_parameters': {
-      'action': 'store_true',
+        'action': 'store_true',
     },
     '--use_nested_fsdp': {
-      'action': 'store_true',
+        'action': 'store_true',
     },
 }
 
@@ -270,9 +272,8 @@ def train_imagenet():
     xm.master_print('Epoch {} train begin {}'.format(epoch, test_utils.now()))
     train_loop_fn(train_device_loader, epoch)
     xm.master_print('Epoch {} train end {}'.format(epoch, test_utils.now()))
-    run_eval = (
-        (not FLAGS.test_only_at_end and epoch % FLAGS.eval_interval == 0) or
-        epoch == FLAGS.num_epochs)
+    run_eval = ((not FLAGS.test_only_at_end and
+                 epoch % FLAGS.eval_interval == 0) or epoch == FLAGS.num_epochs)
     if run_eval:
       accuracy = test_loop_fn(test_device_loader, epoch)
       xm.master_print('Epoch {} test end {}, Accuracy={:.2f}'.format(
