@@ -262,6 +262,7 @@ class XlaFullyShardedDataParallel(nn.Module):
       # Execute the parameter sharding immediately and free up the memory
       gc.collect()
       xm.mark_step()
+      xm.wait_device_ops()
 
   def _get_gradient_predivide_factor(self, world_size: int) -> float:
     factor: int = 1
