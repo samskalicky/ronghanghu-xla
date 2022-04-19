@@ -148,14 +148,14 @@ class XlaFullyShardedDataParallel(nn.Module):
       flatten_parameters: bool = True,
       execute_sharding_on_init: bool = True,
       optimization_barrier_on_output: bool = True,
-      use_all_gather_via_all_reduce: bool = True,
+      use_all_gather_via_all_reduce: bool = False,
       mark_step_on_freeing: bool = False,
       _debug_dummy_forward_pass: bool = False,
       _debug_msg: str = "xla_fsdp",
-      _shard_size_multiple: int = 1,
-      _pin_layout_in_all_reduce: bool = True,
-      _pin_layout_in_all_gather: bool = True,
-      _pin_layout_in_reduce_scatter: bool = True,
+      _shard_size_multiple: int = 128,
+      _pin_layout_in_all_reduce: bool = False,
+      _pin_layout_in_all_gather: bool = False,
+      _pin_layout_in_reduce_scatter: bool = False,
   ):
     if isinstance(module, XlaFullyShardedDataParallel):
       raise RuntimeError(
@@ -201,11 +201,11 @@ class XlaFullyShardedDataParallel(nn.Module):
     # TODO (ronghanghu) change to 1 after https://github.com/pytorch/xla/issues/3510 is resolved
     # make sharded parameter sizes a multiple of 128 for efficient all_gather ops on TPUs
     # (see https://github.com/pytorch/xla/issues/3510#issuecomment-1101739677 for details)
-    # Update 04/19/2022: we reverted to the old all_gather impelmentation via all_reduce as a
-    # workaround to https://github.com/pytorch/xla/issues/3510 after layout pinning is introduced
-    # (https://github.com/pytorch/xla/pull/3511). Hence we changed default _shard_size_multiple = 1
-    # here and deprecated the new all_gather until https://github.com/pytorch/xla/issues/3510 is
-    # fully resolved.
+    # # Update 04/19/2022: we reverted to the old all_gather impelmentation via all_reduce as a
+    # # workaround to https://github.com/pytorch/xla/issues/3510 after layout pinning is introduced
+    # # (https://github.com/pytorch/xla/pull/3511). Hence we changed default _shard_size_multiple = 1
+    # # here and deprecated the new all_gather until https://github.com/pytorch/xla/issues/3510 is
+    # # fully resolved.
     self._shard_size_multiple = _shard_size_multiple
 
     self.gradient_predivide_factor: float = self._get_gradient_predivide_factor(
@@ -974,14 +974,14 @@ class XlaFullyShardedDataParallel(nn.Module):
     p_list, p_shard_list, p_data_list, p_shared_data_list = [], [], [], []
     for p, p_shard in zip(self.full_params, self.sharded_params):
       if not p._has_full_param:
-        # # gather full parameter from shards
-        # # reshape sharded parameters to 2d tensors for efficient gathering on
-        # # TPUs (see https://github.com/pytorch/xla/issues/3510 for details).
-        # p_shard_2d = p_shard.data.view(-1, self._shard_size_multiple)
-        # p_padded = self.all_gather_op(p_shard_2d).flatten().detach()
-        # Update 04/19/2022: we reverted to the old all_gather impelmentation
-        # via all_reduce using https://github.com/pytorch/xla/issues/3511
-        p_padded = self.all_gather_op(p_shard.data).flatten().detach()
+        # gather full parameter from shards
+        # reshape sharded parameters to 2d tensors for efficient gathering on
+        # TPUs (see https://github.com/pytorch/xla/issues/3510 for details).
+        p_shard_2d = p_shard.data.view(-1, self._shard_size_multiple)
+        p_padded = self.all_gather_op(p_shard_2d).flatten().detach()
+        # # Update 04/19/2022: we reverted to the old all_gather impelmentation
+        # # via all_reduce using https://github.com/pytorch/xla/issues/3511
+        # p_padded = self.all_gather_op(p_shard.data).flatten().detach()
         p_data = p_padded[:p_shard._orig_size.numel()].view(p_shard._orig_size)
         p_list.append(p)
         p_shard_list.append(p_shard)
