@@ -36,6 +36,7 @@ import torch_xla.core.xla_model as xm
 from .xla_flatten_params_wrapper import XlaFlattenParamsWrapper
 from .checkpoint_consolidation import consolidate_sharded_model_checkpoints
 from .all_gather_via_all_reduce import all_gather_via_all_reduce
+from .utils import dummy_all_gather, dummy_reduce_scatter
 
 
 class TrainingState(Enum):
@@ -156,6 +157,8 @@ class XlaFullyShardedDataParallel(nn.Module):
       _pin_layout_in_all_reduce: bool = False,
       _pin_layout_in_all_gather: bool = False,
       _pin_layout_in_reduce_scatter: bool = False,
+      _debug_dummy_all_gather_op: bool = False,
+      _debug_dummy_reduce_scatter_op: bool = False,
   ):
     if isinstance(module, XlaFullyShardedDataParallel):
       raise RuntimeError(
@@ -181,14 +184,19 @@ class XlaFullyShardedDataParallel(nn.Module):
     self.reshard_after_forward = self._orig_reshard_after_forward = reshard_after_forward
     self.flatten_parameters = flatten_parameters
     self.optimization_barrier_on_output = optimization_barrier_on_output
-    if use_all_gather_via_all_reduce:
+    if _debug_dummy_all_gather_op:
+      self.all_gather_op = dummy_all_gather
+    elif use_all_gather_via_all_reduce:
       self.all_gather_op = functools.partial(
           all_gather_via_all_reduce, pin_layout=_pin_layout_in_all_reduce)
     else:
       self.all_gather_op = functools.partial(
           xm.all_gather, pin_layout=_pin_layout_in_all_gather)
-    self.reduce_scatter_op = functools.partial(
-        xm.reduce_scatter, pin_layout=_pin_layout_in_reduce_scatter)
+    if _debug_dummy_reduce_scatter_op:
+      self.reduce_scatter_op = dummy_reduce_scatter
+    else:
+      self.reduce_scatter_op = functools.partial(
+          xm.reduce_scatter, pin_layout=_pin_layout_in_reduce_scatter)
     # TODO (ronghanghu): remove when https://github.com/pytorch/xla/issues/3455 is resolved
     # This is a temporary workaround before after we have a mature solution
     # to avoid undesired fusion with XLA compiler optimization barrier (see
