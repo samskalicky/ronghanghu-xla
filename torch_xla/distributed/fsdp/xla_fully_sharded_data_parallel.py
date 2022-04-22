@@ -1023,6 +1023,21 @@ class XlaFullyShardedDataParallel(nn.Module):
           # clear this list for next iteration
           assert self._output_pre_backward_hook_registered is not None
           self._output_pre_backward_hook_registered.clear()
+          if self.optimization_barrier_in_backward:
+            # Ensure that backward pass ops of feature gradients, parameter
+            # gradient and sharding, and full-param freeing (which are usually
+            # performed in previous modules and are registered to
+            # self._backward_opt_barrier_tensors in _grad_opt_barrier_hook,
+            # _pre_backward_hook, and _post_backward_hook) are finished before
+            # rebuilding the full params of this FSDP module.
+            dependency_tensors = self.full_params + self.sharded_params
+            dependency_tensors.extend(
+                [p.grad for p in self.full_params if p.grad is not None])
+            dependency_tensors.extend(
+                [p.grad for p in self.sharded_params if p.grad is not None])
+            dependency_tensors.extend(self._backward_opt_barrier_tensors)
+            if len(dependency_tensors) > 0:
+              xm.optimization_barrier_(dependency_tensors)
           self._clear_backward_opt_barrier_lists()
 
   @torch.no_grad()
