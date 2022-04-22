@@ -159,6 +159,7 @@ class XlaFullyShardedDataParallel(nn.Module):
       mark_step_on_freeing: bool = False,
       _debug_dummy_forward_pass: bool = False,
       _debug_msg: str = "xla_fsdp",
+      _debug_print: bool = False,
       _shard_size_multiple: int = 128,
       _pin_layout_in_all_reduce: bool = False,
       _pin_layout_in_all_gather: bool = False,
@@ -213,6 +214,7 @@ class XlaFullyShardedDataParallel(nn.Module):
     self.mark_step_on_freeing = mark_step_on_freeing
     self._debug_dummy_forward_pass = _debug_dummy_forward_pass
     self._debug_msg = _debug_msg
+    self._debug_print = _debug_print
     # TODO (ronghanghu) change to 1 after https://github.com/pytorch/xla/issues/3510 is resolved
     # make sharded parameter sizes a multiple of 128 for efficient all_gather ops on TPUs
     # (see https://github.com/pytorch/xla/issues/3510#issuecomment-1101739677 for details)
@@ -550,6 +552,7 @@ class XlaFullyShardedDataParallel(nn.Module):
   def _reset_lazy_init(self) -> None:
     """Reset instance so :func:`_lazy_init` will run on the next forward."""
     self._is_root: Optional[bool] = None
+    self._descendant_fsdp_module_ids: Optional[List] = None
     self._output_pre_backward_hook_registered: Optional[List] = None
     self._backward_opt_barrier_tensors: Optional[List] = None
     self._backward_opt_barrier_tensor_ids: Optional[Set] = None
@@ -565,6 +568,7 @@ class XlaFullyShardedDataParallel(nn.Module):
     # entire model hierarchy is setup, thus we run it lazily.
     if self._is_root is None:
       self._set_is_root()
+      self._set_descendant_fsdp_module_ids()
       self._setup_output_hook_and_backward_opt_barrier_lists()
 
     # if self._is_root:
@@ -603,6 +607,15 @@ class XlaFullyShardedDataParallel(nn.Module):
         if m._is_root is None:
           m._is_root = False
 
+  def _set_descendant_fsdp_module_ids(self) -> None:
+    for m in self.modules():  # includes self
+      if isinstance(m, XlaFullyShardedDataParallel):
+        m._descendant_fsdp_module_ids = []
+        for n_, m_ in m.named_modules():
+          # `n != ""` excludes m.
+          if n_ != "" and isinstance(m_, XlaFullyShardedDataParallel):
+            m._descendant_fsdp_module_ids.append(id(m_))
+
   def _setup_output_hook_and_backward_opt_barrier_lists(self) -> None:
     """
     Set up a list to avoid registering pre-backward hooks incorrectly.
@@ -612,11 +625,15 @@ class XlaFullyShardedDataParallel(nn.Module):
     self._output_pre_backward_hook_registered = []
     self._backward_opt_barrier_tensors = []
     self._backward_opt_barrier_tensor_ids = set()
+    self._backward_free_full_param_modules = []
+    self._backward_free_full_param_module_ids = set()
     for n, m in self.named_modules():
       if n != "" and isinstance(m, XlaFullyShardedDataParallel):
         m._output_pre_backward_hook_registered = self._output_pre_backward_hook_registered
         m._backward_opt_barrier_tensors = self._backward_opt_barrier_tensors
         m._backward_opt_barrier_tensor_ids = self._backward_opt_barrier_tensor_ids
+        m._backward_free_full_param_modules = self._backward_free_full_param_modules
+        m._backward_free_full_param_module_ids = self._backward_free_full_param_module_ids
 
   def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
     self._lazy_init()
@@ -704,13 +721,18 @@ class XlaFullyShardedDataParallel(nn.Module):
     return outputs
 
   def _try_adding_to_backward_opt_barrier_lists(self,
-                                                tensor: torch.Tensor) -> None:
+                                                tensor: torch.Tensor) -> bool:
     """
     Add tensor to backward pass optimization barrier list if it is not there.
+
+    Returns True if successfully added, or False if it is already in the list.
     """
     if id(tensor) not in self._backward_opt_barrier_tensor_ids:
       self._backward_opt_barrier_tensor_ids.add(id(tensor))
       self._backward_opt_barrier_tensors.append(tensor)
+      return True
+
+    return False
 
   def _clear_backward_opt_barrier_lists(self) -> None:
     """Reset the backward pass optimization barrier list"""
@@ -723,9 +745,15 @@ class XlaFullyShardedDataParallel(nn.Module):
     Register hook to `dependency_tensors` to put their gradient tensors into
     self._backward_opt_barrier_tensors for backward pass optimization barrer.
     """
+    if not torch.is_grad_enabled():
+      return  # don't register hooks if grad isn't enabled
 
     def _grad_opt_barrier_hook(t_grad: torch.Tensor):
-      self._try_adding_to_backward_opt_barrier_lists(t_grad)
+      is_added = self._try_adding_to_backward_opt_barrier_lists(t_grad)
+      if self._debug_print:
+        xm.master_print(
+            f"{self._debug_msg} tried to add a t_grad tensor of {t.size()} in _grad_opt_barrier_hook; is_added: {is_added}. Now self._backward_opt_barrier_tensors has {len(self._backward_opt_barrier_tensors)} tensors.",
+            flush=True)
 
       t_grad = t_grad.view(t_grad.size())
       xm.optimization_barrier_([t_grad])
@@ -772,7 +800,12 @@ class XlaFullyShardedDataParallel(nn.Module):
         if self.mark_step_on_freeing:
           xm.mark_step()
 
-        self._try_adding_to_backward_opt_barrier_lists(t_grad)
+        is_added = self._try_adding_to_backward_opt_barrier_lists(t_grad)
+        if self._debug_print:
+          xm.master_print(
+              f"{self._debug_msg} tried to add a t_grad tensor of {t_grad.size()} in _pre_backward_hook; is_added: {is_added}. Now self._backward_opt_barrier_tensors has {len(self._backward_opt_barrier_tensors)} tensors.",
+              flush=True)
+
         dependency_tensors = []
         if self.optimization_barrier_in_backward:
           # Ensure that backward pass ops of feature gradients, parameter
@@ -782,7 +815,24 @@ class XlaFullyShardedDataParallel(nn.Module):
           # _pre_backward_hook, and _post_backward_hook) are finished before
           # rebuilding the full params of this FSDP module.
           dependency_tensors = self._backward_opt_barrier_tensors
+        for m in self._backward_free_full_param_modules:
+          if id(self) in m._descendant_fsdp_module_ids:
+            if self._debug_print:
+              xm.master_print(
+                  f"{self._debug_msg} did not free {m._debug_msg} along with {len(dependency_tensors)} dependency tensors in _pre_backward_hook because the latter is an ancestor",
+                  flush=True)
+            continue
+          m._free_full_params(dependency_tensors=dependency_tensors)
+          if self._debug_print:
+            xm.master_print(
+                f"{self._debug_msg} freed {m._debug_msg} along with {len(dependency_tensors)} dependency tensors in _pre_backward_hook",
+                flush=True)
+        self._backward_free_full_param_module_ids.clear()
+        self._backward_free_full_param_modules.clear()
         self._rebuild_full_params(dependency_tensors=dependency_tensors)
+        if self._debug_print:
+          xm.master_print(
+              f"{self._debug_msg} cleared self._backward_opt_barrier_tensors")
         self._clear_backward_opt_barrier_lists()
 
       # Only run the following once per iteration (i.e. in case
@@ -907,7 +957,10 @@ class XlaFullyShardedDataParallel(nn.Module):
       # ``self._require_backward_grad_sync``), since the params will not
       # get updated before the next forward. This saves networking
       # bandwidth but uses more TPU memory.
-      self._free_full_params([param], dependency_tensors=[grad])
+      # self._free_full_params([param], dependency_tensors=[grad])
+      if not id(self) in self._backward_free_full_param_module_ids:
+        self._backward_free_full_param_module_ids.add(id(self))
+        self._backward_free_full_param_modules.append(self)
 
     if not self._require_backward_grad_sync:
       return
@@ -933,8 +986,11 @@ class XlaFullyShardedDataParallel(nn.Module):
 
     grad._has_full_param = True
     self._free_full_params([grad], dependency_tensors=[reduced_grad])
-    self._try_adding_to_backward_opt_barrier_lists(reduced_grad)
-
+    is_added = self._try_adding_to_backward_opt_barrier_lists(reduced_grad)
+    if self._debug_print:
+      xm.master_print(
+          f"{self._debug_msg} tried to add a reduced_grad tensor of {reduced_grad.size()} in _grad_opt_barrier_hook; is_added: {is_added}. Now self._backward_opt_barrier_tensors has {len(self._backward_opt_barrier_tensors)} tensors.",
+          flush=True)
     # Accumulate into the gradient shard.
     assert hasattr(param, "_sharded_param")
     p_shard = param._sharded_param
@@ -1032,21 +1088,32 @@ class XlaFullyShardedDataParallel(nn.Module):
           # clear this list for next iteration
           assert self._output_pre_backward_hook_registered is not None
           self._output_pre_backward_hook_registered.clear()
+          dependency_tensors = []
           if self.optimization_barrier_in_backward:
-            # Ensure that backward pass ops of feature gradients, parameter
-            # gradient and sharding, and full-param freeing (which are usually
-            # performed in previous modules and are registered to
-            # self._backward_opt_barrier_tensors in _grad_opt_barrier_hook,
-            # _pre_backward_hook, and _post_backward_hook) are finished before
-            # rebuilding the full params of this FSDP module.
-            params_and_grads = [
-                (p, p.grad) for p in self.sharded_params if p.grad is not None
-            ]
-            dependency_tensors = [g for _, g in params_and_grads]
-            self._apply_opt_barrier_to_params_and_tensors(
-                self.full_params, self.sharded_params, dependency_tensors)
-            for p, g in params_and_grads:
-              p.grad = g
+            dependency_tensors = self._backward_opt_barrier_tensors
+          for m in self._backward_free_full_param_modules:
+            if id(self) in m._descendant_fsdp_module_ids:
+              if self._debug_print:
+                xm.master_print(
+                    f"{self._debug_msg} did not free {m._debug_msg} along with {len(dependency_tensors)} dependency tensors in _finalize_parameters because the latter is an ancestor",
+                    flush=True)
+              continue
+            m._free_full_params(dependency_tensors=dependency_tensors)
+            if self._debug_print:
+              xm.master_print(
+                  f"{self._debug_msg} freed {m._debug_msg} along with {len(dependency_tensors)} dependency tensors in _finalize_parameters",
+                  flush=True)
+          if id(self) not in self._backward_free_full_param_module_ids:
+            self._free_full_params(dependency_tensors=dependency_tensors)
+            if self._debug_print:
+              xm.master_print(
+                  f"{self._debug_msg} freed *itself* along with {len(dependency_tensors)} dependency tensors in _finalize_parameters",
+                  flush=True)
+          self._backward_free_full_param_module_ids.clear()
+          self._backward_free_full_param_modules.clear()
+          if self._debug_print:
+            xm.master_print(
+                f"{self._debug_msg} cleared self._backward_opt_barrier_tensors")
           self._clear_backward_opt_barrier_lists()
 
   @torch.no_grad()
