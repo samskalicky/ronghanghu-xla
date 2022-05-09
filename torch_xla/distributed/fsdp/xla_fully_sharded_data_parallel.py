@@ -165,6 +165,7 @@ class XlaFullyShardedDataParallel(nn.Module):
       optimization_barrier_in_forward: bool = True,
       optimization_barrier_in_backward: bool = True,
       mark_step_on_finalization: bool = False,
+      zero_level = 3,
       _shard_size_multiple: int = 128,
       _pin_layout_in_all_reduce: bool = False,
       _pin_layout_in_all_gather: bool = False,
